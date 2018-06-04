@@ -134,12 +134,13 @@ end
 
 local ctx_new, ctx_free
 local openssl11, e = pcall(function ()
-    local ctx = _C.HMAC_CTX_new()
-    _C.HMAC_CTX_free(ctx)
+    local ctx = _C.EVP_MD_CTX_new()
+    _C.EVP_MD_CTX_free(ctx)
 end)
+
 if openssl11 then
     ctx_new = function ()
-        return _C.HMAC_CTX_new()
+        return _C.EVP_MD_CTX_new()
     end
     ctx_free = function (ctx)
         ffi.gc(ctx, _C.EVP_MD_CTX_free)
@@ -153,7 +154,6 @@ else
         ffi.gc(ctx, _C.EVP_MD_CTX_destroy)
     end
 end
-
 
 local RSASigner = {}
 _M.RSASigner = RSASigner
