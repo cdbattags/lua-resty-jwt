@@ -5,11 +5,13 @@ local ffi_new = ffi.new
 local ffi_string = ffi.string
 local ffi_cast = ffi.cast
 local _C = ffi.C
+local version = require "resty.openssl.version"
 
 local _M = { _VERSION = "0.2.3" }
 
 local ngx = ngx
 
+ngx.log(ngx.DEBUG, "openssl version = ", version.version(version.VERSION))
 
 local CONST = {
     SHA256_DIGEST = "SHA256",

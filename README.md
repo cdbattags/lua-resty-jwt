@@ -169,7 +169,7 @@ load jwt, check for kid, then verify it with the correct key
 
 sign a table_of_jwt to a jwt_token.
 
-The `alg` argument specifies which hashing algorithm to use for encrypting key (`dir`, `RSA-OAEP-256`).
+The `alg` argument specifies which hashing algorithm to use for encrypting key (`dir`, `RSA-OAEP-256`, `ECDH-ES`).
 The `enc` argument specifies which hashing algorithm to use for encrypting payload (`A128CBC-HS256`, `A256CBC-HS512`)
 
 ### sample of table_of_jwt ###

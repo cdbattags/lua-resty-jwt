@@ -4,6 +4,9 @@ local evp = require "resty.evp"
 local hmac = require "resty.hmac"
 local resty_random = require "resty.random"
 local cipher = require "resty.openssl.cipher"
+local utils = require("resty.utils")
+local pkey = require "resty.openssl.pkey"
+local digest = require "resty.openssl.digest"
 
 local _M = { _VERSION = "0.2.3" }
 
@@ -11,13 +14,19 @@ local mt = {
     __index = _M
 }
 
+local ngx = ngx
 local string_rep = string.rep
 local string_format = string.format
 local string_sub = string.sub
 local string_char = string.char
 local table_concat = table.concat
-local ngx_encode_base64 = ngx.encode_base64
 local ngx_decode_base64 = ngx.decode_base64
+local ngx_encode_base64url = require("ngx.base64").encode_base64url
+local ngx_decode_base64url = require("ngx.base64").decode_base64url
+local string_to_ascii_array = utils.string_to_ascii_array
+local integer_to_32_bit_big_endian = utils.integer_to_32_bit_big_endian
+local get_octet_sequence = utils.get_octet_sequence
+local append_array = utils.append_array
 local cjson_encode = cjson.encode
 local cjson_decode = cjson.decode
 local tostring = tostring
@@ -28,66 +37,75 @@ local pcall = pcall
 local assert = assert
 local setmetatable = setmetatable
 local pairs = pairs
+local _
 
 -- define string constants to avoid string garbage collection
 local str_const = {
-  invalid_jwt= "invalid jwt string",
-  regex_join_msg = "%s.%s",
-  regex_join_delim = "([^%s]+)",
-  regex_split_dot = "%.",
-  regex_jwt_join_str = "%s.%s.%s",
-  raw_underscore  = "raw_",
-  dash = "-",
-  empty = "",
-  dotdot = "..",
-  table  = "table",
-  plus = "+",
-  equal = "=",
-  underscore = "_",
-  slash = "/",
-  header = "header",
-  typ = "typ",
-  JWT = "JWT",
-  JWE = "JWE",
-  payload = "payload",
-  signature = "signature",
-  encrypted_key = "encrypted_key",
-  alg = "alg",
-  enc = "enc",
-  kid = "kid",
-  exp = "exp",
-  nbf = "nbf",
-  iss = "iss",
-  full_obj = "__jwt",
-  x5c = "x5c",
-  x5u = 'x5u',
-  HS256 = "HS256",
-  HS512 = "HS512",
-  RS256 = "RS256",
-  ES256 = "ES256",
-  ES512 = "ES512",
-  RS512 = "RS512",
-  A128CBC_HS256 = "A128CBC-HS256",
-  A128CBC_HS256_CIPHER_MODE = "aes-128-cbc",
-  A256CBC_HS512 = "A256CBC-HS512",
-  A256CBC_HS512_CIPHER_MODE = "aes-256-cbc",
-  A256GCM = "A256GCM",
-  A256GCM_CIPHER_MODE = "aes-256-gcm",
-  RSA_OAEP_256 = "RSA-OAEP-256",
-  DIR = "dir",
-  reason = "reason",
-  verified = "verified",
-  number = "number",
-  string = "string",
-  funct = "function",
-  boolean = "boolean",
-  valid = "valid",
-  valid_issuers = "valid_issuers",
-  lifetime_grace_period = "lifetime_grace_period",
-  require_nbf_claim = "require_nbf_claim",
-  require_exp_claim = "require_exp_claim",
-  internal_error = "internal error",
-  everything_awesome = "everything is awesome~ :p"
+    invalid_jwt= "invalid jwt string",
+    regex_join_msg = "%s.%s",
+    regex_join_delim = "([^%s]+)",
+    regex_split_dot = "%.",
+    regex_jwt_join_str = "%s.%s.%s",
+    raw_underscore  = "raw_",
+    table  = "table",
+    header = "header",
+    typ = "typ",
+    JWT = "JWT",
+    JWE = "JWE",
+    payload = "payload",
+    signature = "signature",
+    encrypted_key = "encrypted_key",
+    alg = "alg",
+    enc = "enc",
+    kid = "kid",
+    exp = "exp",
+    nbf = "nbf",
+    iss = "iss",
+    full_obj = "__jwt",
+    x5c = "x5c",
+    x5u = 'x5u',
+    HS256 = "HS256",
+    HS512 = "HS512",
+    RS256 = "RS256",
+    ES256 = "ES256",
+    ES512 = "ES512",
+    RS512 = "RS512",
+    EC = "EC",
+    A128CBC_HS256 = "A128CBC-HS256",
+    A128CBC_HS256_CIPHER_MODE = "aes-128-cbc",
+    A256CBC_HS512 = "A256CBC-HS512",
+    A256CBC_HS512_CIPHER_MODE = "aes-256-cbc",
+    A256GCM = "A256GCM",
+    A256GCM_CIPHER_MODE = "aes-256-gcm",
+    A128GCM = "A128GCM",
+    A128GCM_CIPHER_MODE = "aes-128-gcm",
+    RSA_OAEP_256 = "RSA-OAEP-256",
+    DIR = "dir",
+    ECDH_ES = "ECDH-ES",
+    SHA_256 = "SHA256",
+    reason = "reason",
+    verified = "verified",
+    number = "number",
+    string = "string",
+    funct = "function",
+    boolean = "boolean",
+    valid = "valid",
+    valid_issuers = "valid_issuers",
+    lifetime_grace_period = "lifetime_grace_period",
+    require_nbf_claim = "require_nbf_claim",
+    require_exp_claim = "require_exp_claim",
+    internal_error = "internal error",
+    everything_awesome = "everything is awesome~ :p"
+}  
+local keydatalen_const = {
+    A256GCM = 256,
+    A128GCM = 128
+}
+local ec_group_to_txt_map = {
+ [415] = "prime256v1", -- X9.62/SECG curve over a 256 bit prime field
+ [714] = "secp256k1", -- SECG curve over a 256 bit prime field
+ [715] = "secp384r1", -- NIST/SECG curve over a 384 bit prime field
+ [716] = "secp521r1", -- NIST/SECG curve over a 521 bit prime field
 }
 
 -- @function split string
@@ -129,6 +147,80 @@ local function get_raw_part(part_name, jwt_obj)
   return raw_part
 end
 
+-- @function derives pkey instance and key parameters from input key
+-- @param key: PEM or JWK formatted key string
+-- @param key_type: description for key
+-- @return loaded key and parameters
+local function get_pkey_with_params(key, key_type)
+  local pkey_instance, pkey_err =  pkey.new(key)
+  if pkey_err or not pkey_instance then
+      local error_msg = "error creating " .. (key_type or "") .. " pkey instance."
+      error({reason = error_msg .. " " .. (pkey_err or "")})
+  end
+  local pkey_params, param_err = pkey_instance:get_parameters()
+  if param_err or not pkey_params then
+    local error_msg = "error getting params from " .. (key_type or "") .. " pkey instance."
+    error({reason = error_msg .. " " .. (param_err or "")})
+  end
+  return pkey_instance, pkey_params
+end
+
+--@function derives a shared key (via concat KDF).
+--@param jwe_header: the JWE header, must have algorithm and encryption params
+--@param  shared_secret_Z: the derived shared secret ('Z'). must not be nil
+--@return the derived shared key
+local function derive_shared_key(jwe_header, shared_secret_Z)
+    -- https://www.rfc-editor.org/rfc/rfc7518#appendix-C
+    if not jwe_header.enc then
+        error({reason = "failed to derived shared key, missing enc header value in jwe"})
+    end
+    local keydatalen = keydatalen_const[jwe_header.enc]
+    if not keydatalen then
+        error({reason = "invalid key data length"})
+    end
+    -- OtherInfo = { AlgorithmID .. PartyUInfo .. PartyVInfo .. SuppPubInfo }
+    local other_info = {}
+    -- AlgorithmID
+    local algorithm_id = get_octet_sequence(jwe_header.enc)
+    append_array(other_info, algorithm_id)
+
+    local empty_octet_sequence = integer_to_32_bit_big_endian(0)
+    -- PartyUInfo  
+    local party_u_info = empty_octet_sequence
+    if jwe_header.apu then
+        local apu = ngx_decode_base64url(jwe_header.apu)
+        party_u_info = get_octet_sequence(apu)
+    end
+    append_array(other_info, party_u_info)
+    -- PartyVInfo
+    local party_v_info = empty_octet_sequence
+    if jwe_header.apv then
+        local apv = ngx_decode_base64url(jwe_header.apv)
+        party_v_info = get_octet_sequence(apv)
+    end
+    append_array(other_info, party_v_info)
+    -- SuppPubInfo
+    local supp_pub_info = integer_to_32_bit_big_endian(keydatalen)
+    append_array(other_info, supp_pub_info)
+    -- SuppPrivInfo
+    -- This is set to the empty octet sequence.
+    -- Concatenating the round number 1 ([0, 0, 0, 1]), Z, and the OtherInfo
+    local shared_secret_ascii = string_to_ascii_array(shared_secret_Z)
+    local derived_key = append_array({0,0,0,1}, shared_secret_ascii)
+    append_array(derived_key, other_info)
+    local derived_key_binary_str = string.char(table.unpack(derived_key))
+    -- SHA256 hashing
+    local d, err = digest.new(str_const.SHA_256)
+    if err or not d then
+        error({reason = "error creating an instance of SHA256 digest:" .. (err or "")})
+    end
+    local md, hash_err = d:final(derived_key_binary_str)
+    if hash_err or not md then
+        error({reason = "error updating message digest:" .. (hash_err or "")})
+    end
+    local result = { table.unpack(string_to_ascii_array(md), 1, keydatalen / 8) }
+    return string.char(table.unpack(result))
+end
 
 --@function decrypt payload
 --@param secret_key to decrypt the payload
@@ -149,6 +241,9 @@ local function decrypt_payload(secret_key, encrypted_payload, enc, iv_in, aad, a
   elseif enc == str_const.A256GCM then
     local aes_256_gcm_cipher = assert(cipher.new(str_const.A256GCM_CIPHER_MODE))
     decrypted_payload, err =  aes_256_gcm_cipher:decrypt(secret_key, iv_in, encrypted_payload, false, aad, auth_tag)
+  elseif enc == str_const.A128GCM then
+    local aes_128_gcm_cipher = assert(cipher.new(str_const.A128GCM_CIPHER_MODE))
+    decrypted_payload, err =  aes_128_gcm_cipher:decrypt(secret_key, iv_in, encrypted_payload, false, aad, auth_tag)
   else
     return nil, "unsupported enc: " .. enc
   end
@@ -181,7 +276,14 @@ local function encrypt_payload(secret_key, message, enc, aad )
     local iv_rand =  resty_random.bytes(12,true) -- 96 bit IV is recommended for efficiency
     local aes_256_gcm_cipher = assert(cipher.new(str_const.A256GCM_CIPHER_MODE))
     local encrypted = aes_256_gcm_cipher:encrypt(secret_key, iv_rand, message, false, aad)
-    local auth_tag = assert(aes_256_gcm_cipher:get_aead_tag())
+    local auth_tag = assert(aes_256_gcm_cipher:get_aead_tag(16)) -- standard authentication tag length (128 bits)
+    return encrypted, iv_rand, auth_tag
+
+  elseif enc == str_const.A128GCM then
+    local iv_rand =  resty_random.bytes(12,true) -- 96 bit IV is recommended for efficiency
+    local aes_128_gcm_cipher = assert(cipher.new(str_const.A128GCM_CIPHER_MODE))
+    local encrypted = aes_128_gcm_cipher:encrypt(secret_key, iv_rand, message, false, aad)
+    local auth_tag = assert(aes_128_gcm_cipher:get_aead_tag(16)) -- standard authentication tag length (128 bits)
     return encrypted, iv_rand, auth_tag
 
   else
@@ -212,6 +314,8 @@ local function derive_keys(enc, secret_key)
 
   if enc == str_const.A256GCM then
     mac_key_len, enc_key_len = 0, 32 -- we need 256 bit key
+  elseif enc == str_const.A128GCM then
+      mac_key_len, enc_key_len = 0, 16 -- we need 128 bit key
   elseif enc == str_const.A128CBC_HS256 then
     mac_key_len, enc_key_len = 16, 16
   elseif enc == str_const.A256CBC_HS512 then
@@ -248,6 +352,9 @@ end
 --@encoded-header
 local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_key, encoded_iv, encoded_cipher_text, encoded_auth_tag)
 
+  if not preshared_key  then
+    error({reason="preshared key must not be null"})
+  end
 
   local header = _M:jwt_decode(encoded_header, true)
   if not header then
@@ -255,20 +362,45 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   end
 
   local alg = header.alg
-  if alg ~= str_const.DIR and alg ~= str_const.RSA_OAEP_256 then
+  if alg ~= str_const.DIR and alg ~= str_const.RSA_OAEP_256 and alg ~= str_const.ECDH_ES then
     error({reason="invalid algorithm: " .. alg})
   end
 
   local key, enc_key
   if alg == str_const.DIR then
-    if not preshared_key  then
-        error({reason="preshared key must not be null"})
-    end
     key, _, enc_key = derive_keys(header.enc, preshared_key)
-  elseif alg == str_const.RSA_OAEP_256 then
-    if not preshared_key  then
-        error({reason="rsa private key must not be null"})
+
+  elseif alg == str_const.ECDH_ES then
+    if not header.epk then 
+      error({reason = "epk (Ephemeral Public Key) header parameter is missing"})
+    end 
+    local json_header_epk = cjson_encode(header.epk)
+    if not json_header_epk then
+      error({reason = "epk (Ephemeral Public Key) header parameter is not valid: " .. (tostring(header.epk) or "") }) 
     end
+    local epk_pkey, epk_pkey_params = get_pkey_with_params(json_header_epk, "EPK")
+    local private_ec_key, private_ec_key_params = get_pkey_with_params(preshared_key, "private EC")
+    
+    local private_ec_key_crv = ec_group_to_txt_map[private_ec_key_params.group]
+    local epk_crv = ec_group_to_txt_map[epk_pkey_params.group]
+    if not (private_ec_key_crv and epk_crv and private_ec_key_crv == epk_crv) then
+      local error_msg = "error invalid curve(s) or curve mismatch for preshared key and epk."
+      error({reason = error_msg .. " private EC key group: " .. (private_ec_key_crv or "") ", EPK group: " .. (epk_crv or "")})
+    end
+
+    -- derive the share secret Z
+    local Z, key_derive_error = private_ec_key:derive(epk_pkey)
+    if not Z or key_derive_error then
+        local error_msg = "derived shared secret ('Z') failed: "
+        error({reason = error_msg .. (key_derive_error or "")})
+    end
+
+    local derived_shared_key = derive_shared_key(header, Z)
+    if not derived_shared_key then
+        error({reason = "concat kdf derivation failed"})
+    end
+    key, _, enc_key = derive_keys(header.enc, derived_shared_key)
+  elseif alg == str_const.RSA_OAEP_256 then
     local rsa_decryptor, err = evp.RSADecryptor:new(preshared_key, nil, evp.CONST.RSA_PKCS1_OAEP_PADDING, evp.CONST.SHA256_DIGEST)
     if err then
         error({reason="failed to create rsa object: ".. err})
@@ -359,7 +491,7 @@ function _M.jwt_encode(self, ori, is_payload)
   if type(ori) == str_const.table then
     ori = is_payload and get_payload_encoder(self)(ori) or cjson_encode(ori)
   end
-  local res = ngx_encode_base64(ori):gsub(str_const.plus, str_const.dash):gsub(str_const.slash, str_const.underscore):gsub(str_const.equal, str_const.empty)
+  local res = ngx_encode_base64url(ori)
   return res
 end
 
@@ -468,6 +600,40 @@ local function sign_jwe(self, secret_key, jwt_obj)
   local payload_to_encrypt = get_payload_encoder(self)(jwt_obj.payload)
   if alg ==  str_const.DIR then
     _, mac_key, enc_key = derive_keys(enc, secret_key)
+    encrypted_key = ""
+  elseif alg == str_const.ECDH_ES then
+    local public_ec_key, parameters = get_pkey_with_params(secret_key, "public EC")
+    local infered_curve = ec_group_to_txt_map[parameters.group]
+    if not infered_curve then
+      local error_msg = "error no match found for group NID: " .. (parameters.group or "")
+      error({reason = error_msg})
+    end
+
+    local ephemeral_key_pair, ephem_pkey_err = pkey.new({
+      type = str_const.EC,
+      curve = infered_curve
+    })
+    if ephem_pkey_err or not ephemeral_key_pair then
+      local error_msg = "error creating ephemeral pkey instance."
+      error({reason = error_msg .. " " .. (ephem_pkey_err or "")})
+    end
+
+    -- this is what will be sent in the header part of JWE under "epk"
+    local epk_jwk =  ephemeral_key_pair:tostring("public", "JWK")
+    header.epk = cjson_decode(epk_jwk)
+    encoded_header = _M:jwt_encode(header)
+    -- derive the shared secret Z
+    local Z, key_derive_error = ephemeral_key_pair:derive(public_ec_key)
+    if not Z or key_derive_error then
+        local error_msg = "derived shared secret ('Z') failed: "
+        error({reason = error_msg .. (key_derive_error or "")})
+    end
+
+    local derived_shared_key = derive_shared_key(header, Z)
+    if not derived_shared_key then
+        error({reason = "concat kdf derivation failed"})
+    end
+    _, mac_key, enc_key = derive_keys(enc, derived_shared_key)
     encrypted_key = ""
   elseif alg == str_const.RSA_OAEP_256 then
     local cert, err
@@ -624,8 +790,9 @@ end
 --@param jwt object
 --@return jwt object with reason whether verified or not
 local function verify_jwe_obj(jwt_obj)
+  local jwt_obj_enc_header = jwt_obj[str_const.header][str_const.enc]
 
-  if jwt_obj[str_const.header][str_const.enc]  ~= str_const.A256GCM then -- tag gets authenticated during decryption
+  if jwt_obj_enc_header  ~= str_const.A256GCM and jwt_obj_enc_header ~= str_const.A128GCM then -- tag gets authenticated during decryption
     local _, mac_key, _ = derive_keys(jwt_obj.header.enc, jwt_obj.internal.key)
     local encoded_header = jwt_obj.internal.encoded_header
 
