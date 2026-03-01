@@ -1,0 +1,83 @@
+name: Publish to LuaRocks & OPM
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Run tests
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Pull test image
+        run: docker pull cdbattags/openresty-testsuite:latest
+
+      - name: Run tests
+        run: |
+          docker run \
+            -i --rm \
+            --entrypoint=/bin/sh \
+            -v "${{ github.workspace }}":/lua-resty-jwt \
+            -w /lua-resty-jwt \
+            cdbattags/openresty-testsuite:latest \
+            -c 'luarocks make lua-resty-jwt-dev-0.rockspec && prove -r t'
+
+  luarocks:
+    needs: test
+    runs-on: ubuntu-latest
+    name: LuaRocks upload
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: leafo/gh-actions-lua@v12
+        with:
+          luaVersion: "5.1.5"
+
+      - uses: leafo/gh-actions-luarocks@v6
+
+      - name: Upload to LuaRocks
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          luarocks install lua-cjson
+          luarocks install luasec
+          luarocks new_version lua-resty-jwt-dev-0.rockspec "${VERSION}-1" \
+            "git+https://github.com/cdbattags/lua-resty-jwt.git"
+          luarocks upload "lua-resty-jwt-${VERSION}-1.rockspec" --api-key=$LUAROCKS_API_KEY
+        env:
+          LUAROCKS_API_KEY: ${{ secrets.LUAROCKS_API_KEY }}
+
+  opm:
+    needs: test
+    runs-on: ubuntu-latest
+    name: OPM upload
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Upload to OPM
+        env:
+          OPM_GITHUB_ACCOUNT: ${{ secrets.OPM_GITHUB_ACCOUNT }}
+          OPM_GITHUB_TOKEN: ${{ secrets.OPM_GITHUB_TOKEN }}
+        run: |
+          cat > /tmp/.opmrc <<EOF
+          github_account=${OPM_GITHUB_ACCOUNT}
+          github_token=${OPM_GITHUB_TOKEN}
+          upload_server=https://opm.openresty.org
+          download_server=https://opm.openresty.org
+          EOF
+          docker run --rm \
+            -v "${{ github.workspace }}":/pkg \
+            -v /tmp/.opmrc:/root/.opmrc:ro \
+            -w /pkg \
+            openresty/openresty:1.27.1.2-0-bookworm-fat \
+            opm upload

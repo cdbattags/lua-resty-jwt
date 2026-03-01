@@ -3,4 +3,4 @@
 	url = https://github.com/jkeys089/lua-resty-hmac.git
 [submodule "openresty-testsuite"]
 	path = openresty-testsuite
-	url = git@github.com:cdbattags/openresty-testsuite.git
+	url = https://github.com/cdbattags/openresty-testsuite.git

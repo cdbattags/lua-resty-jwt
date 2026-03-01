@@ -5,7 +5,7 @@ local hmac = require "resty.hmac"
 local resty_random = require "resty.random"
 local cipher = require "resty.openssl.cipher"
 
-local _M = { _VERSION = "0.2.3" }
+local _M = { _VERSION = "0.2.4" }
 
 local mt = {
     __index = _M
