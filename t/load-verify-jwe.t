@@ -642,3 +642,191 @@ valid: true
 verified: true
 --- no_error_log
 [error]
+
+
+=== TEST 15: Use rsa-oaep-256 with aes-128-gcm for encryption
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+
+            local table_of_jwt = {
+              header = {
+                  alg = "RSA-OAEP-256",
+                  enc = "A128GCM",
+                  typ = "JWE",
+                  kid = "myKey"
+              },
+              payload = {
+                  foo = "bar"
+              }
+             }
+
+            local jwt_token = jwt:sign(get_testcert("cert-pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("cert-key.pem"), jwt_token)
+            print(cjson.encode(jwt_obj))
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 16: Use ecdh-es with aes-256-gcm, EC P-521 key
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES",
+                  enc = "A256GCM",
+                  typ = "JWE",
+                  kid = "myKey"
+              },
+              payload = {
+                  foo = "bar"
+              }
+             }
+
+            local jwt_token = jwt:sign(get_testcert("ec_cert_p521_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert_p521-key.pem"), jwt_token)
+            print(cjson.encode(jwt_obj))
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 17: Use ecdh-es with aes-128-gcm, EC P-521 key
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES",
+                  enc = "A128GCM",
+                  typ = "JWE",
+                  kid = "myKey"
+              },
+              payload = {
+                  foo = "bar"
+              }
+             }
+
+            local jwt_token = jwt:sign(get_testcert("ec_cert_p521_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert_p521-key.pem"), jwt_token)
+            print(cjson.encode(jwt_obj))
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 18: Use ecdh-es with aes-256-gcm, EC P-256 key
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES",
+                  enc = "A256GCM",
+                  typ = "JWE",
+                  kid = "myKey"
+              },
+              payload = {
+                  foo = "bar"
+              }
+             }
+
+            local jwt_token = jwt:sign(get_testcert("ec_cert_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert-key.pem"), jwt_token)
+            print(cjson.encode(jwt_obj))
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]

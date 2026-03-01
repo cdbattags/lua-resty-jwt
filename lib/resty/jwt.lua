@@ -4,6 +4,9 @@ local evp = require "resty.evp"
 local hmac = require "resty.hmac"
 local resty_random = require "resty.random"
 local cipher = require "resty.openssl.cipher"
+local pkey = require "resty.openssl.pkey"
+local digest = require "resty.openssl.digest"
+local utils = require "resty.utils"
 
 local _M = { _VERSION = "0.2.4" }
 
@@ -75,8 +78,11 @@ local str_const = {
   A256CBC_HS512_CIPHER_MODE = "aes-256-cbc",
   A256GCM = "A256GCM",
   A256GCM_CIPHER_MODE = "aes-256-gcm",
+  A128GCM = "A128GCM",
+  A128GCM_CIPHER_MODE = "aes-128-gcm",
   RSA_OAEP = "RSA-OAEP",
   RSA_OAEP_256 = "RSA-OAEP-256",
+  ECDH_ES = "ECDH-ES",
   DIR = "dir",
   reason = "reason",
   verified = "verified",
@@ -133,6 +139,71 @@ local function get_raw_part(part_name, jwt_obj)
 end
 
 
+-- key length in bits for Concat KDF (GCM modes only for ECDH-ES direct agreement)
+local keydatalen_map = {
+  [str_const.A128GCM] = 128,
+  [str_const.A256GCM] = 256,
+  [str_const.A128CBC_HS256] = 256,
+  [str_const.A256CBC_HS512] = 512,
+}
+
+-- OpenSSL NID -> curve name for EC key generation
+local ec_nid_to_curve = {
+  [415] = "prime256v1",
+  [714] = "secp256k1",
+  [715] = "secp384r1",
+  [716] = "secp521r1",
+}
+
+-- RFC 7518 Section 4.6.2 - Concat KDF (single-pass SHA-256)
+local function derive_shared_key(header, shared_secret_Z)
+    local enc = header.enc
+    local keydatalen = keydatalen_map[enc]
+    if not keydatalen then
+        error({reason="unsupported enc for ECDH-ES key derivation: " .. enc})
+    end
+
+    local other_info = {}
+    utils.append_array(other_info, utils.get_octet_sequence(enc))
+
+    local empty_octet = utils.integer_to_32_bit_big_endian(0)
+    local party_u = empty_octet
+    if header.apu then
+        local apu_decoded = ngx_decode_base64(header.apu)
+        if apu_decoded then
+            party_u = utils.get_octet_sequence(apu_decoded)
+        end
+    end
+    utils.append_array(other_info, party_u)
+
+    local party_v = empty_octet
+    if header.apv then
+        local apv_decoded = ngx_decode_base64(header.apv)
+        if apv_decoded then
+            party_v = utils.get_octet_sequence(apv_decoded)
+        end
+    end
+    utils.append_array(other_info, party_v)
+
+    utils.append_array(other_info, utils.integer_to_32_bit_big_endian(keydatalen))
+
+    local z_bytes = utils.string_to_byte_array(shared_secret_Z)
+    local round_concat = utils.append_array({0, 0, 0, 1}, z_bytes)
+    utils.append_array(round_concat, other_info)
+
+    local input = string_char(unpack(round_concat))
+    local d, err = digest.new("SHA256")
+    if not d then
+        error({reason="failed to create SHA256 digest: " .. (err or "")})
+    end
+    local md, hash_err = d:final(input)
+    if not md then
+        error({reason="failed to compute KDF hash: " .. (hash_err or "")})
+    end
+
+    return string_sub(md, 1, keydatalen / 8)
+end
+
 --@function decrypt payload
 --@param secret_key to decrypt the payload
 --@param encrypted payload
@@ -152,6 +223,9 @@ local function decrypt_payload(secret_key, encrypted_payload, enc, iv_in, aad, a
   elseif enc == str_const.A256GCM then
     local aes_256_gcm_cipher = assert(cipher.new(str_const.A256GCM_CIPHER_MODE))
     decrypted_payload, err =  aes_256_gcm_cipher:decrypt(secret_key, iv_in, encrypted_payload, false, aad, auth_tag)
+  elseif enc == str_const.A128GCM then
+    local aes_128_gcm_cipher = assert(cipher.new(str_const.A128GCM_CIPHER_MODE))
+    decrypted_payload, err =  aes_128_gcm_cipher:decrypt(secret_key, iv_in, encrypted_payload, false, aad, auth_tag)
   else
     return nil, "unsupported enc: " .. enc
   end
@@ -187,6 +261,13 @@ local function encrypt_payload(secret_key, message, enc, aad )
     local auth_tag = assert(aes_256_gcm_cipher:get_aead_tag())
     return encrypted, iv_rand, auth_tag
 
+  elseif enc == str_const.A128GCM then
+    local iv_rand =  resty_random.bytes(12,true)
+    local aes_128_gcm_cipher = assert(cipher.new(str_const.A128GCM_CIPHER_MODE))
+    local encrypted = aes_128_gcm_cipher:encrypt(secret_key, iv_rand, message, false, aad)
+    local auth_tag = assert(aes_128_gcm_cipher:get_aead_tag())
+    return encrypted, iv_rand, auth_tag
+
   else
     return nil, nil , nil, "unsupported enc: " .. enc
   end
@@ -214,7 +295,9 @@ local function derive_keys(enc, secret_key)
   local mac_key_len, enc_key_len = 16, 16
 
   if enc == str_const.A256GCM then
-    mac_key_len, enc_key_len = 0, 32 -- we need 256 bit key
+    mac_key_len, enc_key_len = 0, 32
+  elseif enc == str_const.A128GCM then
+    mac_key_len, enc_key_len = 0, 16
   elseif enc == str_const.A128CBC_HS256 then
     mac_key_len, enc_key_len = 16, 16
   elseif enc == str_const.A256CBC_HS512 then
@@ -258,7 +341,8 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   end
 
   local alg = header.alg
-  if alg ~= str_const.DIR and alg ~= str_const.RSA_OAEP_256 and alg ~= str_const.RSA_OAEP then
+  if alg ~= str_const.DIR and alg ~= str_const.RSA_OAEP_256
+      and alg ~= str_const.RSA_OAEP and alg ~= str_const.ECDH_ES then
     error({reason="invalid algorithm: " .. alg})
   end
 
@@ -268,6 +352,28 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
         error({reason="preshared key must not be null"})
     end
     key, _, enc_key = derive_keys(header.enc, preshared_key)
+  elseif alg == str_const.ECDH_ES then
+    if not preshared_key then
+        error({reason="EC private key must not be null"})
+    end
+    local epk_jwk = header.epk
+    if not epk_jwk then
+        error({reason="missing epk in JWE header"})
+    end
+    local private_key, priv_err = pkey.new(preshared_key)
+    if not private_key then
+        error({reason="failed to load EC private key: " .. (priv_err or "")})
+    end
+    local epk, epk_err = pkey.new(cjson_encode(epk_jwk), { format = "JWK" })
+    if not epk then
+        error({reason="failed to load ephemeral public key: " .. (epk_err or "")})
+    end
+    local Z, derive_err = private_key:derive(epk)
+    if not Z then
+        error({reason="ECDH key derivation failed: " .. (derive_err or "")})
+    end
+    local derived_key = derive_shared_key(header, Z)
+    key, _, enc_key = derive_keys(header.enc, derived_key)
   elseif alg == str_const.RSA_OAEP_256 or alg == str_const.RSA_OAEP then
     if not preshared_key  then
         error({reason="rsa private key must not be null"})
@@ -473,6 +579,32 @@ local function sign_jwe(self, secret_key, jwt_obj)
   if alg ==  str_const.DIR then
     _, mac_key, enc_key = derive_keys(enc, secret_key)
     encrypted_key = ""
+  elseif alg == str_const.ECDH_ES then
+    local public_key, pub_err = pkey.new(secret_key)
+    if not public_key then
+        error({reason="failed to load EC public key: " .. (pub_err or "")})
+    end
+    local params, param_err = public_key:get_parameters()
+    if not params then
+        error({reason="failed to get EC key parameters: " .. (param_err or "")})
+    end
+    local curve = ec_nid_to_curve[params.group]
+    if not curve then
+        error({reason="unsupported EC curve NID: " .. tostring(params.group)})
+    end
+    local ephemeral, eph_err = pkey.new({ type = "EC", curve = curve })
+    if not ephemeral then
+        error({reason="failed to generate ephemeral EC key: " .. (eph_err or "")})
+    end
+    header.epk = cjson_decode(ephemeral:tostring("public", "JWK"))
+    encoded_header = _M:jwt_encode(header)
+    local Z, derive_err = ephemeral:derive(public_key)
+    if not Z then
+        error({reason="ECDH key derivation failed: " .. (derive_err or "")})
+    end
+    local derived_key = derive_shared_key(header, Z)
+    _, mac_key, enc_key = derive_keys(enc, derived_key)
+    encrypted_key = ""
   elseif alg == str_const.RSA_OAEP_256 or alg == str_const.RSA_OAEP then
     local cert, err
     if secret_key:find("CERTIFICATE") then
@@ -636,7 +768,8 @@ end
 --@return jwt object with reason whether verified or not
 local function verify_jwe_obj(jwt_obj)
 
-  if jwt_obj[str_const.header][str_const.enc]  ~= str_const.A256GCM then -- tag gets authenticated during decryption
+  local enc = jwt_obj[str_const.header][str_const.enc]
+  if enc ~= str_const.A256GCM and enc ~= str_const.A128GCM then -- tag gets authenticated during decryption
     local _, mac_key, _ = derive_keys(jwt_obj.header.enc, jwt_obj.internal.key)
     local encoded_header = jwt_obj.internal.encoded_header
 
