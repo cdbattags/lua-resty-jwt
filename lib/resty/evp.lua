@@ -6,7 +6,7 @@ local ffi_string = ffi.string
 local ffi_cast = ffi.cast
 local _C = ffi.C
 
-local _M = { _VERSION = "0.2.3" }
+local _M = { _VERSION = "0.2.4" }
 
 local ngx = ngx
 
@@ -190,6 +190,31 @@ int EVP_PKEY_decrypt(EVP_PKEY_CTX *ctx,
 
 ]]
 
+-- OpenSSL 3.x exports EVP_PKEY_CTX_set_rsa_oaep_md as a real function.
+-- In 1.1.x it was a macro over EVP_PKEY_CTX_ctrl, which the 3.x compat
+-- shim no longer translates correctly (returns -1 / "invalid operation").
+local _set_oaep_md
+do
+    local ok = pcall(function()
+        ffi.cdef[[
+            int EVP_PKEY_CTX_set_rsa_oaep_md(EVP_PKEY_CTX *ctx,
+                                              const EVP_MD *md);
+        ]]
+        local _ = _C.EVP_PKEY_CTX_set_rsa_oaep_md   -- resolve symbol
+    end)
+    if ok then
+        _set_oaep_md = function(ctx, md)
+            return _C.EVP_PKEY_CTX_set_rsa_oaep_md(ctx, md)
+        end
+    else
+        _set_oaep_md = function(ctx, md)
+            return _C.EVP_PKEY_CTX_ctrl(ctx, CONST.EVP_PKEY_RSA,
+                CONST.EVP_PKEY_OP_TYPE_CRYPT,
+                CONST.EVP_PKEY_CTRL_RSA_OAEP_MD, 0, ffi_cast("void *", md))
+        end
+    end
+end
+
 
 local function _err(ret)
     -- The openssl error queue can have multiple items, print them all separated by ': '
@@ -306,10 +331,9 @@ local function _create_evp_ctx(self, encrypt)
             return _err()
     end
 
-    if self.padding ==  CONST.RSA_PKCS1_OAEP_PADDING then
-        if _C.EVP_PKEY_CTX_ctrl(self.ctx, CONST.EVP_PKEY_RSA, CONST.EVP_PKEY_OP_TYPE_CRYPT,
-              CONST.EVP_PKEY_CTRL_RSA_OAEP_MD, 0, ffi_cast("void *", md)) <= 0 then
-              return _err()
+    if self.padding == CONST.RSA_PKCS1_OAEP_PADDING then
+        if _set_oaep_md(self.ctx, md) <= 0 then
+            return _err()
         end
     end
 

@@ -831,7 +831,7 @@ No algorithm supplied
 --- no_error_log
 [error]
 
-=== TEST 26: Verify invalid JWT which looks like a JWE with alg
+=== TEST 27: Verify invalid JWT which looks like a JWE with alg
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
