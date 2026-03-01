@@ -12,6 +12,7 @@ local ngx = ngx
 
 
 local CONST = {
+    SHA1_DIGEST = "SHA1",
     SHA256_DIGEST = "SHA256",
     SHA512_DIGEST = "SHA512",
     -- ref : https://github.com/openssl/openssl/blob/master/include/openssl/rsa.h

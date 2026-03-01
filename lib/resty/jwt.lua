@@ -73,6 +73,7 @@ local str_const = {
   A256CBC_HS512_CIPHER_MODE = "aes-256-cbc",
   A256GCM = "A256GCM",
   A256GCM_CIPHER_MODE = "aes-256-gcm",
+  RSA_OAEP = "RSA-OAEP",
   RSA_OAEP_256 = "RSA-OAEP-256",
   DIR = "dir",
   reason = "reason",
@@ -255,7 +256,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   end
 
   local alg = header.alg
-  if alg ~= str_const.DIR and alg ~= str_const.RSA_OAEP_256 then
+  if alg ~= str_const.DIR and alg ~= str_const.RSA_OAEP_256 and alg ~= str_const.RSA_OAEP then
     error({reason="invalid algorithm: " .. alg})
   end
 
@@ -265,11 +266,12 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
         error({reason="preshared key must not be null"})
     end
     key, _, enc_key = derive_keys(header.enc, preshared_key)
-  elseif alg == str_const.RSA_OAEP_256 then
+  elseif alg == str_const.RSA_OAEP_256 or alg == str_const.RSA_OAEP then
     if not preshared_key  then
         error({reason="rsa private key must not be null"})
     end
-    local rsa_decryptor, err = evp.RSADecryptor:new(preshared_key, nil, evp.CONST.RSA_PKCS1_OAEP_PADDING, evp.CONST.SHA256_DIGEST)
+    local digest_alg = alg == str_const.RSA_OAEP and evp.CONST.SHA1_DIGEST or evp.CONST.SHA256_DIGEST
+    local rsa_decryptor, err = evp.RSADecryptor:new(preshared_key, nil, evp.CONST.RSA_PKCS1_OAEP_PADDING, digest_alg)
     if err then
         error({reason="failed to create rsa object: ".. err})
     end
@@ -469,7 +471,7 @@ local function sign_jwe(self, secret_key, jwt_obj)
   if alg ==  str_const.DIR then
     _, mac_key, enc_key = derive_keys(enc, secret_key)
     encrypted_key = ""
-  elseif alg == str_const.RSA_OAEP_256 then
+  elseif alg == str_const.RSA_OAEP_256 or alg == str_const.RSA_OAEP then
     local cert, err
     if secret_key:find("CERTIFICATE") then
         cert, err = evp.Cert:new(secret_key)
@@ -479,7 +481,8 @@ local function sign_jwe(self, secret_key, jwt_obj)
     if not cert then
         error({reason="Decode secret is not a valid cert/public key: " .. (err and err or secret_key)})
     end
-    local rsa_encryptor = evp.RSAEncryptor:new(cert, evp.CONST.RSA_PKCS1_OAEP_PADDING, evp.CONST.SHA256_DIGEST)
+    local digest_alg = alg == str_const.RSA_OAEP and evp.CONST.SHA1_DIGEST or evp.CONST.SHA256_DIGEST
+    local rsa_encryptor = evp.RSAEncryptor:new(cert, evp.CONST.RSA_PKCS1_OAEP_PADDING, digest_alg)
     if err then
         error("failed to create rsa object for encryption ".. err)
     end

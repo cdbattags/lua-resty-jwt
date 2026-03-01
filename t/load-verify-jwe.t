@@ -548,3 +548,97 @@ verified: false
 error: true
 --- no_error_log
 [error]
+
+
+=== TEST 13: Use rsa-oaep (SHA1) with aes-256-cbc-hs512 for encryption
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+
+            local table_of_jwt = {
+              header = {
+                  alg = "RSA-OAEP",
+                  enc = "A256CBC-HS512",
+                  typ = "JWE",
+                  kid = "myKey"
+              },
+              payload = {
+                  foo = "bar"
+              }
+             }
+
+            local jwt_token = jwt:sign(get_testcert("cert-pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("cert-key.pem"), jwt_token)
+            print(cjson.encode(jwt_obj))
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 14: Use rsa-oaep (SHA1) with aes-256-gcm for encryption
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+
+            local table_of_jwt = {
+              header = {
+                  alg = "RSA-OAEP",
+                  enc = "A256GCM",
+                  typ = "JWE",
+                  kid = "myKey"
+              },
+              payload = {
+                  foo = "bar"
+              }
+             }
+
+            local jwt_token = jwt:sign(get_testcert("cert-pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("cert-key.pem"), jwt_token)
+            print(cjson.encode(jwt_obj))
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
