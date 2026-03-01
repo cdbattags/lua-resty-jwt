@@ -794,7 +794,7 @@ local function validate_claims(self, jwt_obj, ...)
         error("Claim spec value must be a function - see jwt-validators.lua for helper functions", 0)
       end
 
-      local val = claim == str_const.full_obj and cjson_decode(jwt_json) or jwt_obj.payload[claim]
+      local val = claim == str_const.full_obj and cjson_decode(jwt_json) or (jwt_obj.payload and jwt_obj.payload[claim])
       local success, ret = pcall(fx, val, claim, jwt_json)
       if not success then
         jwt_obj[str_const.reason] = ret.reason or string.gsub(ret, "^.-:%d-: ", "")
