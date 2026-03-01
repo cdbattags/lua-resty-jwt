@@ -341,14 +341,41 @@ local function _create_evp_ctx(self, encrypt)
     return self.ctx
 end
 
+local evp_pkey_ctx_ptr_ct = ffi.typeof('EVP_PKEY_CTX*[1]')
+
+local function _create_digest_ctx(self, init_fn, md)
+    local md_ctx = ctx_new()
+    if md_ctx == nil then
+        return _err()
+    end
+    ctx_free(md_ctx)
+
+    local ppkey_ctx = self.padding and evp_pkey_ctx_ptr_ct() or nil
+
+    if init_fn(md_ctx, ppkey_ctx, md, nil, self.evp_pkey) ~= 1 then
+        return _err()
+    end
+
+    if ppkey_ctx and self.padding == CONST.RSA_PKCS1_PSS_PADDING then
+        if _C.EVP_PKEY_CTX_ctrl(ppkey_ctx[0], CONST.EVP_PKEY_RSA, -1,
+                CONST.EVP_PKEY_CTRL_RSA_PADDING, self.padding, nil) <= 0 then
+            return _err()
+        end
+    end
+
+    return md_ctx
+end
+
 local RSASigner = {algo="RSA"}
 _M.RSASigner = RSASigner
 
 --- Create a new RSASigner
 -- @param pem_private_key A private key string in PEM format
 -- @param password password for the private key (if required)
+-- @param padding optional RSA padding mode (e.g., RSA_PKCS1_PSS_PADDING)
 -- @returns RSASigner, err_string
-function RSASigner.new(self, pem_private_key, password)
+function RSASigner.new(self, pem_private_key, password, padding)
+    self.padding = padding
     return _new_key (
         self,
         {
@@ -367,29 +394,20 @@ function RSASigner.sign(self, message, digest_name)
     local buf = ffi_new("unsigned char[?]", 1024)
     local len = ffi_new("size_t[1]", 1024)
 
-    local ctx = ctx_new()
-    if ctx == nil then
-        return _err()
-    end
-    ctx_free(ctx)
-
     local md = _C.EVP_get_digestbyname(digest_name)
     if md == nil then
         return _err()
     end
 
-    if _C.EVP_DigestInit_ex(ctx, md, nil) ~= 1 then
+    local md_ctx, err = _create_digest_ctx(self, _C.EVP_DigestSignInit, md)
+    if not md_ctx then
         return _err()
     end
 
-    local ret = _C.EVP_DigestSignInit(ctx, nil, md, nil, self.evp_pkey)
-    if  ret ~= 1 then
-        return _err()
-    end
-    if _C.EVP_DigestUpdate(ctx, message, #message) ~= 1 then
+    if _C.EVP_DigestUpdate(md_ctx, message, #message) ~= 1 then
          return _err()
     end
-    if _C.EVP_DigestSignFinal(ctx, buf, len) ~= 1 then
+    if _C.EVP_DigestSignFinal(md_ctx, buf, len) ~= 1 then
         return _err()
     end
     return ffi_string(buf, len[0]), nil
@@ -462,13 +480,15 @@ _M.RSAVerifier = RSAVerifier
 
 --- Create a new RSAVerifier
 -- @param key_source An instance of Cert or PublicKey used for verification
+-- @param padding optional RSA padding mode (e.g., RSA_PKCS1_PSS_PADDING)
 -- @returns RSAVerifier, error_string
-function RSAVerifier.new(self, key_source)
+function RSAVerifier.new(self, key_source, padding)
     if not key_source then
         return nil, "You must pass in an key_source for a public key"
     end
     local evp_public_key = key_source.public_key
     self.evp_pkey = evp_public_key
+    self.padding = padding
     return self, nil
 end
 
@@ -483,26 +503,17 @@ function RSAVerifier.verify(self, message, sig, digest_name)
         return _err(false)
     end
 
-    local ctx = ctx_new()
-    if ctx == nil then
-        return _err(false)
-    end
-    ctx_free(ctx)
-
-    if _C.EVP_DigestInit_ex(ctx, md, nil) ~= 1 then
+    local md_ctx, err = _create_digest_ctx(self, _C.EVP_DigestVerifyInit, md)
+    if not md_ctx then
         return _err(false)
     end
 
-    local ret = _C.EVP_DigestVerifyInit(ctx, nil, md, nil, self.evp_pkey)
-    if ret ~= 1 then
-        return _err(false)
-    end
-    if _C.EVP_DigestUpdate(ctx, message, #message) ~= 1 then
+    if _C.EVP_DigestUpdate(md_ctx, message, #message) ~= 1 then
         return _err(false)
     end
     local sig_bin = ffi_new("unsigned char[?]", #sig)
     ffi_copy(sig_bin, sig, #sig)
-    if _C.EVP_DigestVerifyFinal(ctx, sig_bin, #sig) == 1 then
+    if _C.EVP_DigestVerifyFinal(md_ctx, sig_bin, #sig) == 1 then
         return true, nil
     else
         return false, "Verification failed"
