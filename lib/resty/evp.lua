@@ -91,7 +91,7 @@ typedef struct ECDSA_SIG_st {
     BIGNUM *s;} ECDSA_SIG;
 ECDSA_SIG*     ECDSA_SIG_new(void);
 int            i2d_ECDSA_SIG(const ECDSA_SIG *sig, unsigned char **pp);
-ECDSA_SIG*     d2i_ECDSA_SIG(ECDSA_SIG **sig, unsigned char **pp,
+ECDSA_SIG*     d2i_ECDSA_SIG(ECDSA_SIG **sig, const unsigned char **pp,
 long len);
 void           ECDSA_SIG_free(ECDSA_SIG *sig);
 
@@ -421,7 +421,7 @@ function ECSigner.get_raw_sig(self, signature)
     if not signature then
         return nil, "Must pass a signature to convert"
     end
-    local sig_ptr = ffi_new("unsigned char *[1]")
+    local sig_ptr = ffi_new("const unsigned char *[1]")
     local sig_bin = ffi_new("unsigned char [?]", #signature)
     ffi_copy(sig_bin, signature, #signature)
 
