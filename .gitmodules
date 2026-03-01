@@ -1,3 +1,6 @@
 [submodule "third-party/lua-resty-hmac"]
 	path = third-party/lua-resty-hmac
 	url = https://github.com/jkeys089/lua-resty-hmac.git
+[submodule "openresty-testsuite"]
+	path = openresty-testsuite
+	url = git@github.com:cdbattags/openresty-testsuite.git
