@@ -10,7 +10,7 @@ As discussed in https://github.com/SkyLothar/lua-resty-jwt/issues/85, this proje
 
 lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01.html) for ngx_lua and LuaJIT
 
-[![Build Status](https://img.shields.io/travis/cdbattags/lua-resty-jwt.svg?style=flat-square)](https://travis-ci.org/cdbattags/lua-resty-jwt)
+[![test](https://github.com/cdbattags/lua-resty-jwt/actions/workflows/test.yml/badge.svg)](https://github.com/cdbattags/lua-resty-jwt/actions/workflows/test.yml)
 
 
 **Attention :exclamation: the hmac lib used here is [lua-resty-hmac](https://github.com/jkeys089/lua-resty-hmac), not the one in luarocks.**
@@ -32,6 +32,8 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [sign](#sign)
     * [verify](#verify)
     * [load and verify](#load--verify)
+    * [set_alg_whitelist](#set_alg_whitelist)
+    * [set_trusted_certs_file](#set_trusted_certs_file)
     * [sign JWE](#sign-jwe)
 * [Verification](#verification)
     * [JWT Validators](#jwt-validators)
@@ -115,7 +117,7 @@ To load this library,
 
 sign a table_of_jwt to a jwt_token.
 
-The `alg` argument specifies which hashing algorithm to use (`HS256`, `HS512`, `RS256`).
+The `alg` argument specifies which signing algorithm to use (`HS256`, `HS512`, `RS256`, `RS512`, `PS256`, `PS512`, `ES256`, `ES512`).
 
 ### sample of table_of_jwt ###
 
@@ -163,14 +165,39 @@ load jwt, check for kid, then verify it with the correct key
 }
 ```
 
+## set_alg_whitelist
+
+`syntax: jwt:set_alg_whitelist(algorithms)`
+
+Restrict which algorithms are accepted during verification. Pass a table whose keys are the allowed algorithm names. If set, any token using an algorithm not in the whitelist will be rejected.
+
+```lua
+local jwt = require "resty.jwt"
+
+-- Only allow RS256 and ES256
+jwt:set_alg_whitelist({ RS256 = 1, ES256 = 1 })
+
+local jwt_obj = jwt:verify(public_key, jwt_token)
+-- Tokens signed with HS256, RS512, etc. will fail with:
+--   "whitelist unsupported alg: HS256"
+```
+
+Pass `nil` to clear the whitelist and allow all algorithms again.
+
+## set_trusted_certs_file
+
+`syntax: jwt:set_trusted_certs_file(filename)`
+
+Set a PEM file containing trusted CA certificates for `x5c`/`x5u` based verification of RS256/ES256 tokens.
+
 ## sign-jwe
 
 `syntax: local jwt_token = jwt:sign(key, table_of_jwt)`
 
 sign a table_of_jwt to a jwt_token.
 
-The `alg` argument specifies which hashing algorithm to use for encrypting key (`dir`, `RSA-OAEP-256`).
-The `enc` argument specifies which hashing algorithm to use for encrypting payload (`A128CBC-HS256`, `A256CBC-HS512`)
+The `alg` argument specifies which key management algorithm to use (`dir`, `RSA-OAEP`, `RSA-OAEP-256`, `ECDH-ES`).
+The `enc` argument specifies which content encryption algorithm to use (`A128CBC-HS256`, `A256CBC-HS512`, `A128GCM`, `A256GCM`).
 
 ### sample of table_of_jwt ###
 
@@ -442,7 +469,7 @@ and then load the library in Lua:
 # Testing With Docker
 
 ```
-./ci script
+./ci
 ```
 
 [Back to TOC](#table-of-contents)
