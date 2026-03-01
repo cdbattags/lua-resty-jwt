@@ -15,16 +15,5 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Pull test image
-        run: docker pull cdbattags/openresty-testsuite:latest
-
       - name: Run tests
-        run: |
-          docker run \
-            -i --rm \
-            --entrypoint=/bin/sh \
-            -v "${{ github.workspace }}":/lua-resty-jwt \
-            -w /lua-resty-jwt \
-            --name lua-resty-jwt-tests \
-            cdbattags/openresty-testsuite:latest \
-            -c 'luarocks make lua-resty-jwt-dev-0.rockspec && prove -r t'
+        run: ./ci
