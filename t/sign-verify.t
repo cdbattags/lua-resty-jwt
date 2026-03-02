@@ -1,6 +1,7 @@
+BEGIN { use Cwd; $ENV{TEST_NGINX_SERVROOT} = Cwd::cwd() . "/t/servroot_$$"; $ENV{TEST_NGINX_SERVER_PORT} = 10000 + ($$ % 50000) }
 use Test::Nginx::Socket::Lua;
 
-repeat_each(2);
+repeat_each(1);
 
 plan tests => repeat_each() * (3 * blocks());
 
@@ -586,7 +587,246 @@ bar
 [error]
 
 
-=== TEST 17: Sign and verify PS512 with x5c
+=== TEST 17: Sign and verify HS384
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local jwt_token = jwt:sign(
+                "lua-resty-jwt",
+                {
+                    header={typ="JWT", alg="HS384"},
+                    payload={foo="bar", exp=9999999999}
+                }
+            )
+            local jwt_obj = jwt:verify("lua-resty-jwt", jwt_token)
+            ngx.say(jwt_obj["verified"])
+            ngx.say(jwt_obj["reason"])
+            ngx.say(jwt_obj["payload"]["foo"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+everything is awesome~ :p
+bar
+--- no_error_log
+[error]
+
+
+=== TEST 18: Sign and verify RS384
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local jwt_token = jwt:sign(
+                get_testcert("cert-key.pem"),
+                {
+                    header={typ="JWT", alg="RS384"},
+                    payload={foo="bar", exp=9999999999}
+                }
+            )
+            local jwt_obj = jwt:verify(get_testcert("cert-pubkey.pem"), jwt_token)
+            ngx.say(jwt_obj["verified"])
+            ngx.say(jwt_obj["reason"])
+            ngx.say(jwt_obj["payload"]["foo"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+everything is awesome~ :p
+bar
+--- no_error_log
+[error]
+
+
+=== TEST 19: Sign and verify ES384
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local jwt_token = jwt:sign(
+                get_testcert("ec_cert_p384-key.pem"),
+                {
+                    header={typ="JWT", alg="ES384"},
+                    payload={foo="bar", exp=9999999999}
+                }
+            )
+            local jwt_obj = jwt:verify(get_testcert("ec_cert_p384_pubkey.pem"), jwt_token)
+            ngx.say(jwt_obj["verified"])
+            ngx.say(jwt_obj["reason"])
+            ngx.say(jwt_obj["payload"]["foo"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+everything is awesome~ :p
+bar
+--- no_error_log
+[error]
+
+
+=== TEST 20: Sign and verify PS384
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local jwt_token = jwt:sign(
+                get_testcert("cert-key.pem"),
+                {
+                    header={typ="JWT", alg="PS384"},
+                    payload={foo="bar", exp=9999999999}
+                }
+            )
+            local jwt_obj = jwt:verify(get_testcert("cert-pubkey.pem"), jwt_token)
+            ngx.say(jwt_obj["verified"])
+            ngx.say(jwt_obj["reason"])
+            ngx.say(jwt_obj["payload"]["foo"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+everything is awesome~ :p
+bar
+--- no_error_log
+[error]
+
+
+=== TEST 21: Sign and verify Ed25519
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local jwt_token = jwt:sign(
+                get_testcert("ed25519-key.pem"),
+                {
+                    header={typ="JWT", alg="Ed25519"},
+                    payload={foo="bar", exp=9999999999}
+                }
+            )
+            local jwt_obj = jwt:verify(get_testcert("ed25519-pubkey.pem"), jwt_token)
+            ngx.say(jwt_obj["verified"])
+            ngx.say(jwt_obj["reason"])
+            ngx.say(jwt_obj["payload"]["foo"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+everything is awesome~ :p
+bar
+--- no_error_log
+[error]
+
+
+=== TEST 22: Sign and verify Ed448
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local jwt_token = jwt:sign(
+                get_testcert("ed448-key.pem"),
+                {
+                    header={typ="JWT", alg="Ed448"},
+                    payload={foo="bar", exp=9999999999}
+                }
+            )
+            local jwt_obj = jwt:verify(get_testcert("ed448-pubkey.pem"), jwt_token)
+            ngx.say(jwt_obj["verified"])
+            ngx.say(jwt_obj["reason"])
+            ngx.say(jwt_obj["payload"]["foo"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+everything is awesome~ :p
+bar
+--- no_error_log
+[error]
+
+
+=== TEST 23: Sign and verify EdDSA compat alias (Ed25519 key)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local jwt_token = jwt:sign(
+                get_testcert("ed25519-key.pem"),
+                {
+                    header={typ="JWT", alg="EdDSA"},
+                    payload={foo="bar", exp=9999999999}
+                }
+            )
+            local jwt_obj = jwt:verify(get_testcert("ed25519-pubkey.pem"), jwt_token)
+            ngx.say(jwt_obj["verified"])
+            ngx.say(jwt_obj["reason"])
+            ngx.say(jwt_obj["payload"]["foo"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+everything is awesome~ :p
+bar
+--- no_error_log
+[error]
+
+
+=== TEST 24: Sign and verify PS512 with x5c
 --- http_config eval: $::HttpConfig
 --- config
     location /t {

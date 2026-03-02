@@ -65,24 +65,41 @@ local str_const = {
   x5c = "x5c",
   x5u = 'x5u',
   HS256 = "HS256",
+  HS384 = "HS384",
   HS512 = "HS512",
   RS256 = "RS256",
+  RS384 = "RS384",
   RS512 = "RS512",
   PS256 = "PS256",
+  PS384 = "PS384",
   PS512 = "PS512",
   ES256 = "ES256",
+  ES384 = "ES384",
   ES512 = "ES512",
+  Ed25519 = "Ed25519",
+  Ed448 = "Ed448",
+  EdDSA = "EdDSA",
   A128CBC_HS256 = "A128CBC-HS256",
   A128CBC_HS256_CIPHER_MODE = "aes-128-cbc",
   A256CBC_HS512 = "A256CBC-HS512",
   A256CBC_HS512_CIPHER_MODE = "aes-256-cbc",
   A256GCM = "A256GCM",
   A256GCM_CIPHER_MODE = "aes-256-gcm",
+  A192CBC_HS384 = "A192CBC-HS384",
+  A192CBC_HS384_CIPHER_MODE = "aes-192-cbc",
   A128GCM = "A128GCM",
   A128GCM_CIPHER_MODE = "aes-128-gcm",
+  A192GCM = "A192GCM",
+  A192GCM_CIPHER_MODE = "aes-192-gcm",
   RSA_OAEP = "RSA-OAEP",
   RSA_OAEP_256 = "RSA-OAEP-256",
+  RSA_OAEP_384 = "RSA-OAEP-384",
+  RSA_OAEP_512 = "RSA-OAEP-512",
   ECDH_ES = "ECDH-ES",
+  ECDH_ES_A128KW = "ECDH-ES+A128KW",
+  ECDH_ES_A256KW = "ECDH-ES+A256KW",
+  A128KW = "A128KW",
+  A256KW = "A256KW",
   DIR = "dir",
   reason = "reason",
   verified = "verified",
@@ -142,9 +159,13 @@ end
 -- key length in bits for Concat KDF (GCM modes only for ECDH-ES direct agreement)
 local keydatalen_map = {
   [str_const.A128GCM] = 128,
+  [str_const.A192GCM] = 192,
   [str_const.A256GCM] = 256,
   [str_const.A128CBC_HS256] = 256,
+  [str_const.A192CBC_HS384] = 384,
   [str_const.A256CBC_HS512] = 512,
+  [str_const.A128KW] = 128,
+  [str_const.A256KW] = 256,
 }
 
 -- OpenSSL NID -> curve name for EC key generation
@@ -204,6 +225,29 @@ local function derive_shared_key(header, shared_secret_Z)
     return string_sub(md, 1, keydatalen / 8)
 end
 
+-- AES Key Wrap (RFC 3394) default IV
+local AES_KW_DEFAULT_IV = string_char(0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6)
+
+local function aes_key_wrap(kek, plaintext_key)
+    local mode = #kek == 16 and "aes-128-wrap" or "aes-256-wrap"
+    local c = assert(cipher.new(mode))
+    local wrapped, err = c:encrypt(kek, AES_KW_DEFAULT_IV, plaintext_key, false)
+    if not wrapped then
+        error({reason="AES key wrap failed: " .. (err or "")})
+    end
+    return wrapped
+end
+
+local function aes_key_unwrap(kek, wrapped_key)
+    local mode = #kek == 16 and "aes-128-wrap" or "aes-256-wrap"
+    local c = assert(cipher.new(mode))
+    local unwrapped, err = c:decrypt(kek, AES_KW_DEFAULT_IV, wrapped_key, false)
+    if not unwrapped then
+        error({reason="AES key unwrap failed: " .. (err or "")})
+    end
+    return unwrapped
+end
+
 --@function decrypt payload
 --@param secret_key to decrypt the payload
 --@param encrypted payload
@@ -217,12 +261,18 @@ local function decrypt_payload(secret_key, encrypted_payload, enc, iv_in, aad, a
   if enc == str_const.A128CBC_HS256 then
     local aes_128_cbs_cipher = assert(cipher.new(str_const.A128CBC_HS256_CIPHER_MODE))
     decrypted_payload, err=  aes_128_cbs_cipher:decrypt(secret_key, iv_in, encrypted_payload)
+  elseif enc == str_const.A192CBC_HS384 then
+    local aes_192_cbs_cipher = assert(cipher.new(str_const.A192CBC_HS384_CIPHER_MODE))
+    decrypted_payload, err =  aes_192_cbs_cipher:decrypt(secret_key, iv_in, encrypted_payload)
   elseif enc == str_const.A256CBC_HS512 then
     local aes_256_cbs_cipher = assert(cipher.new(str_const.A256CBC_HS512_CIPHER_MODE))
     decrypted_payload, err =  aes_256_cbs_cipher:decrypt(secret_key, iv_in, encrypted_payload)
   elseif enc == str_const.A256GCM then
     local aes_256_gcm_cipher = assert(cipher.new(str_const.A256GCM_CIPHER_MODE))
     decrypted_payload, err =  aes_256_gcm_cipher:decrypt(secret_key, iv_in, encrypted_payload, false, aad, auth_tag)
+  elseif enc == str_const.A192GCM then
+    local aes_192_gcm_cipher = assert(cipher.new(str_const.A192GCM_CIPHER_MODE))
+    decrypted_payload, err =  aes_192_gcm_cipher:decrypt(secret_key, iv_in, encrypted_payload, false, aad, auth_tag)
   elseif enc == str_const.A128GCM then
     local aes_128_gcm_cipher = assert(cipher.new(str_const.A128GCM_CIPHER_MODE))
     decrypted_payload, err =  aes_128_gcm_cipher:decrypt(secret_key, iv_in, encrypted_payload, false, aad, auth_tag)
@@ -248,6 +298,12 @@ local function encrypt_payload(secret_key, message, enc, aad )
     local encrypted = aes_128_cbs_cipher:encrypt(secret_key, iv_rand, message)
     return encrypted, iv_rand
 
+  elseif enc == str_const.A192CBC_HS384 then
+    local iv_rand =  resty_random.bytes(16,true)
+    local aes_192_cbs_cipher = assert(cipher.new(str_const.A192CBC_HS384_CIPHER_MODE))
+    local encrypted = aes_192_cbs_cipher:encrypt(secret_key, iv_rand, message)
+    return encrypted, iv_rand
+
   elseif enc == str_const.A256CBC_HS512 then
     local iv_rand =  resty_random.bytes(16,true)
     local aes_256_cbs_cipher = assert(cipher.new(str_const.A256CBC_HS512_CIPHER_MODE))
@@ -259,6 +315,13 @@ local function encrypt_payload(secret_key, message, enc, aad )
     local aes_256_gcm_cipher = assert(cipher.new(str_const.A256GCM_CIPHER_MODE))
     local encrypted = aes_256_gcm_cipher:encrypt(secret_key, iv_rand, message, false, aad)
     local auth_tag = assert(aes_256_gcm_cipher:get_aead_tag())
+    return encrypted, iv_rand, auth_tag
+
+  elseif enc == str_const.A192GCM then
+    local iv_rand =  resty_random.bytes(12,true)
+    local aes_192_gcm_cipher = assert(cipher.new(str_const.A192GCM_CIPHER_MODE))
+    local encrypted = aes_192_gcm_cipher:encrypt(secret_key, iv_rand, message, false, aad)
+    local auth_tag = assert(aes_192_gcm_cipher:get_aead_tag())
     return encrypted, iv_rand, auth_tag
 
   elseif enc == str_const.A128GCM then
@@ -280,6 +343,8 @@ end
 local function hmac_digest(enc, mac_key, message)
   if enc == str_const.A128CBC_HS256 then
     return hmac:new(mac_key, hmac.ALGOS.SHA256):final(message)
+  elseif enc == str_const.A192CBC_HS384 then
+    return hmac:new(mac_key, hmac.ALGOS.SHA384):final(message)
   elseif enc == str_const.A256CBC_HS512 then
     return hmac:new(mac_key, hmac.ALGOS.SHA512):final(message)
   else
@@ -296,10 +361,14 @@ local function derive_keys(enc, secret_key)
 
   if enc == str_const.A256GCM then
     mac_key_len, enc_key_len = 0, 32
+  elseif enc == str_const.A192GCM then
+    mac_key_len, enc_key_len = 0, 24
   elseif enc == str_const.A128GCM then
     mac_key_len, enc_key_len = 0, 16
   elseif enc == str_const.A128CBC_HS256 then
     mac_key_len, enc_key_len = 16, 16
+  elseif enc == str_const.A192CBC_HS384 then
+    mac_key_len, enc_key_len = 24, 24
   elseif enc == str_const.A256CBC_HS512 then
     mac_key_len, enc_key_len = 32, 32
   else
@@ -341,8 +410,11 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   end
 
   local alg = header.alg
-  if alg ~= str_const.DIR and alg ~= str_const.RSA_OAEP_256
-      and alg ~= str_const.RSA_OAEP and alg ~= str_const.ECDH_ES then
+  if alg ~= str_const.DIR and alg ~= str_const.RSA_OAEP
+      and alg ~= str_const.RSA_OAEP_256 and alg ~= str_const.RSA_OAEP_384
+      and alg ~= str_const.RSA_OAEP_512 and alg ~= str_const.ECDH_ES
+      and alg ~= str_const.ECDH_ES_A128KW and alg ~= str_const.ECDH_ES_A256KW
+      and alg ~= str_const.A128KW and alg ~= str_const.A256KW then
     error({reason="invalid algorithm: " .. alg})
   end
 
@@ -374,11 +446,50 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     end
     local derived_key = derive_shared_key(header, Z)
     key, _, enc_key = derive_keys(header.enc, derived_key)
-  elseif alg == str_const.RSA_OAEP_256 or alg == str_const.RSA_OAEP then
+  elseif alg == str_const.ECDH_ES_A128KW or alg == str_const.ECDH_ES_A256KW then
+    if not preshared_key then
+        error({reason="EC private key must not be null"})
+    end
+    local epk_jwk = header.epk
+    if not epk_jwk then
+        error({reason="missing epk in JWE header"})
+    end
+    local private_key, priv_err = pkey.new(preshared_key)
+    if not private_key then
+        error({reason="failed to load EC private key: " .. (priv_err or "")})
+    end
+    local epk, epk_err = pkey.new(cjson_encode(epk_jwk), { format = "JWK" })
+    if not epk then
+        error({reason="failed to load ephemeral public key: " .. (epk_err or "")})
+    end
+    local Z, derive_err = private_key:derive(epk)
+    if not Z then
+        error({reason="ECDH key derivation failed: " .. (derive_err or "")})
+    end
+    local kw_alg = alg == str_const.ECDH_ES_A128KW and str_const.A128KW or str_const.A256KW
+    local kek = derive_shared_key({ enc = kw_alg, apu = header.apu, apv = header.apv }, Z)
+    local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
+    local secret_key = aes_key_unwrap(kek, wrapped_key)
+    key, _, enc_key = derive_keys(header.enc, secret_key)
+  elseif alg == str_const.A128KW or alg == str_const.A256KW then
+    if not preshared_key then
+        error({reason="AES key wrap key must not be null"})
+    end
+    local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
+    local secret_key = aes_key_unwrap(preshared_key, wrapped_key)
+    key, _, enc_key = derive_keys(header.enc, secret_key)
+  elseif alg == str_const.RSA_OAEP or alg == str_const.RSA_OAEP_256
+      or alg == str_const.RSA_OAEP_384 or alg == str_const.RSA_OAEP_512 then
     if not preshared_key  then
         error({reason="rsa private key must not be null"})
     end
-    local digest_alg = alg == str_const.RSA_OAEP and evp.CONST.SHA1_DIGEST or evp.CONST.SHA256_DIGEST
+    local oaep_digest = {
+      [str_const.RSA_OAEP] = evp.CONST.SHA1_DIGEST,
+      [str_const.RSA_OAEP_256] = evp.CONST.SHA256_DIGEST,
+      [str_const.RSA_OAEP_384] = evp.CONST.SHA384_DIGEST,
+      [str_const.RSA_OAEP_512] = evp.CONST.SHA512_DIGEST,
+    }
+    local digest_alg = oaep_digest[alg]
     local rsa_decryptor, err = evp.RSADecryptor:new(preshared_key, nil, evp.CONST.RSA_PKCS1_OAEP_PADDING, digest_alg)
     if err then
         error({reason="failed to create rsa object: ".. err})
@@ -611,7 +722,38 @@ local function sign_jwe(self, secret_key, jwt_obj)
     local derived_key = derive_shared_key(header, Z)
     _, mac_key, enc_key = derive_keys(enc, derived_key)
     encrypted_key = ""
-  elseif alg == str_const.RSA_OAEP_256 or alg == str_const.RSA_OAEP then
+  elseif alg == str_const.ECDH_ES_A128KW or alg == str_const.ECDH_ES_A256KW then
+    local public_key, pub_err = pkey.new(secret_key)
+    if not public_key then
+        error({reason="failed to load EC public key: " .. (pub_err or "")})
+    end
+    local params, param_err = public_key:get_parameters()
+    if not params then
+        error({reason="failed to get EC key parameters: " .. (param_err or "")})
+    end
+    local curve = ec_nid_to_curve[params.group]
+    if not curve then
+        error({reason="unsupported EC curve NID: " .. tostring(params.group)})
+    end
+    local ephemeral, eph_err = pkey.new({ type = "EC", curve = curve })
+    if not ephemeral then
+        error({reason="failed to generate ephemeral EC key: " .. (eph_err or "")})
+    end
+    header.epk = cjson_decode(ephemeral:tostring("public", "JWK"))
+    encoded_header = _M:jwt_encode(header)
+    local Z, derive_err = ephemeral:derive(public_key)
+    if not Z then
+        error({reason="ECDH key derivation failed: " .. (derive_err or "")})
+    end
+    local kw_alg = alg == str_const.ECDH_ES_A128KW and str_const.A128KW or str_const.A256KW
+    local kek = derive_shared_key({ enc = kw_alg, apu = header.apu, apv = header.apv }, Z)
+    key, mac_key, enc_key = derive_keys(enc)
+    encrypted_key = aes_key_wrap(kek, key)
+  elseif alg == str_const.A128KW or alg == str_const.A256KW then
+    key, mac_key, enc_key = derive_keys(enc)
+    encrypted_key = aes_key_wrap(secret_key, key)
+  elseif alg == str_const.RSA_OAEP or alg == str_const.RSA_OAEP_256
+      or alg == str_const.RSA_OAEP_384 or alg == str_const.RSA_OAEP_512 then
     local cert, err
     if secret_key:find("CERTIFICATE") then
         cert, err = evp.Cert:new(secret_key)
@@ -621,7 +763,13 @@ local function sign_jwe(self, secret_key, jwt_obj)
     if not cert then
         error({reason="Decode secret is not a valid cert/public key: " .. (err and err or secret_key)})
     end
-    local digest_alg = alg == str_const.RSA_OAEP and evp.CONST.SHA1_DIGEST or evp.CONST.SHA256_DIGEST
+    local oaep_digest = {
+      [str_const.RSA_OAEP] = evp.CONST.SHA1_DIGEST,
+      [str_const.RSA_OAEP_256] = evp.CONST.SHA256_DIGEST,
+      [str_const.RSA_OAEP_384] = evp.CONST.SHA384_DIGEST,
+      [str_const.RSA_OAEP_512] = evp.CONST.SHA512_DIGEST,
+    }
+    local digest_alg = oaep_digest[alg]
     local rsa_encryptor = evp.RSAEncryptor:new(cert, evp.CONST.RSA_PKCS1_OAEP_PADDING, digest_alg)
     if err then
         error("failed to create rsa object for encryption ".. err)
@@ -660,7 +808,7 @@ local function get_secret_str(secret_or_function, jwt_obj)
   if type(secret_or_function) == str_const.funct then
     -- Only use with hmac algorithms
     local alg = jwt_obj[str_const.header][str_const.alg]
-    if alg ~= str_const.HS256 and alg ~= str_const.HS512 then
+    if alg ~= str_const.HS256 and alg ~= str_const.HS384 and alg ~= str_const.HS512 then
       error({reason="secret function can only be used with hmac alg: " .. alg})
     end
 
@@ -706,13 +854,16 @@ function _M.sign(self, secret_key, jwt_obj)
   if alg == str_const.HS256 then
     local secret_str = get_secret_str(secret_key, jwt_obj)
     signature = hmac:new(secret_str, hmac.ALGOS.SHA256):final(message)
+  elseif alg == str_const.HS384 then
+    local secret_str = get_secret_str(secret_key, jwt_obj)
+    signature = hmac:new(secret_str, hmac.ALGOS.SHA384):final(message)
   elseif alg == str_const.HS512 then
     local secret_str = get_secret_str(secret_key, jwt_obj)
     signature = hmac:new(secret_str, hmac.ALGOS.SHA512):final(message)
-  elseif alg == str_const.RS256 or alg == str_const.RS512
-      or alg == str_const.PS256 or alg == str_const.PS512 then
+  elseif alg == str_const.RS256 or alg == str_const.RS384 or alg == str_const.RS512
+      or alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512 then
     local signer, err
-    if alg == str_const.PS256 or alg == str_const.PS512 then
+    if alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512 then
       signer, err = evp.RSASigner:new(secret_key, nil, evp.CONST.RSA_PKCS1_PSS_PADDING)
     else
       signer, err = evp.RSASigner:new(secret_key)
@@ -722,10 +873,12 @@ function _M.sign(self, secret_key, jwt_obj)
     end
     if alg == str_const.RS256 or alg == str_const.PS256 then
       signature = signer:sign(message, evp.CONST.SHA256_DIGEST)
+    elseif alg == str_const.RS384 or alg == str_const.PS384 then
+      signature = signer:sign(message, evp.CONST.SHA384_DIGEST)
     elseif alg == str_const.RS512 or alg == str_const.PS512 then
       signature = signer:sign(message, evp.CONST.SHA512_DIGEST)
     end
-  elseif alg == str_const.ES256 or alg == str_const.ES512 then
+  elseif alg == str_const.ES256 or alg == str_const.ES384 or alg == str_const.ES512 then
     local signer, err = evp.ECSigner:new(secret_key)
     if not signer then
       error({reason="signer error: " .. err})
@@ -734,6 +887,8 @@ function _M.sign(self, secret_key, jwt_obj)
     local der_signature = ""
     if alg == str_const.ES256 then
       der_signature = signer:sign(message, evp.CONST.SHA256_DIGEST)
+    elseif alg == str_const.ES384 then
+      der_signature = signer:sign(message, evp.CONST.SHA384_DIGEST)
     elseif alg == str_const.ES512 then
       der_signature = signer:sign(message, evp.CONST.SHA512_DIGEST)
     end
@@ -741,6 +896,15 @@ function _M.sign(self, secret_key, jwt_obj)
     signature, err = signer:get_raw_sig(der_signature)
     if not signature then
       error({reason="signature error: " .. err})
+    end
+  elseif alg == str_const.Ed25519 or alg == str_const.Ed448 or alg == str_const.EdDSA then
+    local pk, err = pkey.new(secret_key)
+    if not pk then
+      error({reason="failed to load EdDSA private key: " .. (err or "")})
+    end
+    signature, err = pk:sign(message)
+    if not signature then
+      error({reason="EdDSA sign error: " .. (err or "")})
     end
   else
     error({reason="unsupported alg: " .. alg})
@@ -775,7 +939,7 @@ end
 local function verify_jwe_obj(jwt_obj)
 
   local enc = jwt_obj[str_const.header][str_const.enc]
-  if enc ~= str_const.A256GCM and enc ~= str_const.A128GCM then -- tag gets authenticated during decryption
+  if enc ~= str_const.A256GCM and enc ~= str_const.A192GCM and enc ~= str_const.A128GCM then -- tag gets authenticated during decryption
     local _, mac_key, _ = derive_keys(jwt_obj.header.enc, jwt_obj.internal.key)
     local encoded_header = jwt_obj.internal.encoded_header
 
@@ -995,7 +1159,7 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
     end
   end
 
-  if alg == str_const.HS256 or alg == str_const.HS512 then
+  if alg == str_const.HS256 or alg == str_const.HS384 or alg == str_const.HS512 then
     local success, ret = pcall(_M.sign, self, secret, jwt_obj)
     if not success then
       -- syntax check
@@ -1004,9 +1168,9 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
       -- signature check
       jwt_obj[str_const.reason] = "signature mismatch: " .. jwt_obj[str_const.signature]
     end
-  elseif alg == str_const.RS256 or alg == str_const.RS512
-      or alg == str_const.PS256 or alg == str_const.PS512
-      or alg == str_const.ES256 or alg == str_const.ES512 then
+  elseif alg == str_const.RS256 or alg == str_const.RS384 or alg == str_const.RS512
+      or alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512
+      or alg == str_const.ES256 or alg == str_const.ES384 or alg == str_const.ES512 then
     local cert, err
     if self.trusted_certs_file ~= nil then
       local cert_str = extract_certificate(jwt_obj, self.x5u_content_retriever)
@@ -1039,11 +1203,11 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
       return jwt_obj
     end
     local verifier = ''
-    if alg == str_const.RS256 or alg == str_const.RS512 then
+    if alg == str_const.RS256 or alg == str_const.RS384 or alg == str_const.RS512 then
       verifier = evp.RSAVerifier:new(cert)
-    elseif alg == str_const.PS256 or alg == str_const.PS512 then
+    elseif alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512 then
       verifier = evp.RSAVerifier:new(cert, evp.CONST.RSA_PKCS1_PSS_PADDING)
-    elseif alg == str_const.ES256 or alg == str_const.ES512 then
+    elseif alg == str_const.ES256 or alg == str_const.ES384 or alg == str_const.ES512 then
       verifier = evp.ECVerifier:new(cert)
     end
     if not verifier then
@@ -1069,11 +1233,34 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
 
     if alg == str_const.RS256 or alg == str_const.ES256 or alg == str_const.PS256 then
       verified, err = verifier:verify(message, sig, evp.CONST.SHA256_DIGEST)
+    elseif alg == str_const.RS384 or alg == str_const.ES384 or alg == str_const.PS384 then
+      verified, err = verifier:verify(message, sig, evp.CONST.SHA384_DIGEST)
     elseif alg == str_const.RS512 or alg == str_const.ES512 or alg == str_const.PS512 then
       verified, err = verifier:verify(message, sig, evp.CONST.SHA512_DIGEST)
     end
     if not verified then
       jwt_obj[str_const.reason] = err
+    end
+  elseif alg == str_const.Ed25519 or alg == str_const.Ed448 or alg == str_const.EdDSA then
+    local pk, pk_err
+    if secret ~= nil then
+      pk, pk_err = pkey.new(secret)
+    end
+    if not pk then
+      jwt_obj[str_const.reason] = "Failed to load EdDSA public key: " .. (pk_err or "no key provided")
+      return jwt_obj
+    end
+    local raw_header = get_raw_part(str_const.header, jwt_obj)
+    local raw_payload = get_raw_part(str_const.payload, jwt_obj)
+    local message = string_format(str_const.regex_join_msg, raw_header, raw_payload)
+    local sig = _M:jwt_decode(jwt_obj[str_const.signature], false)
+    if not sig then
+      jwt_obj[str_const.reason] = "Wrongly encoded signature"
+      return jwt_obj
+    end
+    local ok, verify_err = pk:verify(sig, message)
+    if not ok then
+      jwt_obj[str_const.reason] = verify_err or "EdDSA signature verification failed"
     end
   else
     jwt_obj[str_const.reason] = "Unsupported algorithm " .. alg
