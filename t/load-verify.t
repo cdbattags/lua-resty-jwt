@@ -11,6 +11,10 @@ our $HttpConfig = <<'_EOC_';
     lua_package_path 'lib/?.lua;;';
 _EOC_
 
+if ($ENV{COVERAGE}) {
+    $HttpConfig .= "    init_by_lua_block { require('luacov') }\n";
+}
+
 no_long_string();
 
 run_tests();

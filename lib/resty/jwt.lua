@@ -10,7 +10,7 @@ local openssl_rand = require "resty.openssl.rand"
 local kdf = require "resty.openssl.kdf"
 local utils = require "resty.utils"
 
-local _M = { _VERSION = "0.3.0" }
+local _M = { _VERSION = "0.3.1" }
 
 local mt = {
     __index = _M
@@ -187,7 +187,8 @@ local ec_nid_to_curve = {
   [716] = "secp521r1",
 }
 
--- RFC 7518 Section 4.6.2 - Concat KDF (single-pass SHA-256)
+-- RFC 7518 Section 4.6.2 - Concat KDF (multi-round SHA-256)
+-- reps = ceil(keydatalen / hashlen); hashlen = 256 for SHA-256
 local function derive_shared_key(header, shared_secret_Z)
     local enc = header.enc
     local keydatalen = keydatalen_map[enc]
@@ -219,21 +220,32 @@ local function derive_shared_key(header, shared_secret_Z)
 
     utils.append_array(other_info, utils.integer_to_32_bit_big_endian(keydatalen))
 
+    local hashlen = 256
+    local reps = math.ceil(keydatalen / hashlen)
     local z_bytes = utils.string_to_byte_array(shared_secret_Z)
-    local round_concat = utils.append_array({0, 0, 0, 1}, z_bytes)
-    utils.append_array(round_concat, other_info)
+    local derived = {}
 
-    local input = string_char(unpack(round_concat))
-    local d, err = digest.new("SHA256")
-    if not d then
-        error({reason="failed to create SHA256 digest: " .. (err or "")})
-    end
-    local md, hash_err = d:final(input)
-    if not md then
-        error({reason="failed to compute KDF hash: " .. (hash_err or "")})
+    for round = 1, reps do
+        local counter = utils.integer_to_32_bit_big_endian(round)
+        local round_concat = {}
+        utils.append_array(round_concat, counter)
+        utils.append_array(round_concat, z_bytes)
+        utils.append_array(round_concat, other_info)
+
+        local input = string_char(unpack(round_concat))
+        local d, err = digest.new("SHA256")
+        if not d then
+            error({reason="failed to create SHA256 digest: " .. (err or "")})
+        end
+        local md, hash_err = d:final(input)
+        if not md then
+            error({reason="failed to compute KDF hash: " .. (hash_err or "")})
+        end
+        derived[round] = md
     end
 
-    return string_sub(md, 1, keydatalen / 8)
+    local full = table_concat(derived)
+    return string_sub(full, 1, keydatalen / 8)
 end
 
 -- AES Key Wrap (RFC 3394) default IV

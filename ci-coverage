@@ -1,0 +1,31 @@
+#!/bin/bash
+set -eo pipefail
+
+IMAGE="cdbattags/openresty-testsuite:latest"
+
+docker run \
+  -i --rm \
+  --entrypoint=/bin/sh \
+  -v "$(pwd)":/lua-resty-jwt \
+  -w /lua-resty-jwt \
+  --name lua-resty-jwt-coverage \
+  "$IMAGE" \
+  -c '
+    luarocks install luacov
+    luarocks make lua-resty-jwt-dev-0.rockspec
+
+    rm -f luacov.stats.out luacov.report.out
+
+    COVERAGE=1 prove -j1 -r t
+    rc=$?
+
+    luacov
+    echo ""
+    echo "========================================"
+    echo "  Coverage Report"
+    echo "========================================"
+    cat luacov.report.out
+
+    rm -rf t/servroot_* 2>/dev/null
+    exit $rc
+  '

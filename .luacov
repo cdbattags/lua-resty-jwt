@@ -1,0 +1,22 @@
+-- luacov configuration
+-- Only instrument our library files, not third-party or test code
+return {
+  statsfile = "luacov.stats.out",
+  reportfile = "luacov.report.out",
+
+  include = {
+    "resty/jwt$",
+    "resty/evp$",
+    "resty/jwt%-validators$",
+    "resty/hmac$",
+    "resty/utils$",
+  },
+
+  exclude = {
+    "luacov$",
+    "luacov/",
+    "cjson",
+    "resty/openssl",
+    "resty/random",
+  },
+}

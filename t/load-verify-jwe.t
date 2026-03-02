@@ -9,6 +9,10 @@ our $HttpConfig = <<'_EOC_';
     lua_package_path 'lib/?.lua;;';
 _EOC_
 
+if ($ENV{COVERAGE}) {
+    $HttpConfig .= "    init_by_lua_block { require('luacov') }\n";
+}
+
 no_long_string();
 
 run_tests();
@@ -1430,5 +1434,721 @@ GET /t
 true
 valid: true
 verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 35: dir with A128GCM
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local shared_key = "1234567890abcdef"
+            local table_of_jwt = {
+              header = { alg = "dir", enc = "A128GCM" },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(shared_key, table_of_jwt)
+            local jwt_obj = jwt:verify(shared_key, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 36: dir with A192GCM
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local shared_key = "1234567890abcdef12345678"
+            local table_of_jwt = {
+              header = { alg = "dir", enc = "A192GCM" },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(shared_key, table_of_jwt)
+            local jwt_obj = jwt:verify(shared_key, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 37: dir with A256GCM
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local shared_key = "12341234123412341234123412341234"
+            local table_of_jwt = {
+              header = { alg = "dir", enc = "A256GCM" },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(shared_key, table_of_jwt)
+            local jwt_obj = jwt:verify(shared_key, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 38: dir with A192CBC-HS384
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            -- 48-byte key for A192CBC-HS384 (24 MAC + 24 enc)
+            local shared_key = "123456789012345678901234" ..
+                               "123456789012345678901234"
+            local table_of_jwt = {
+              header = { alg = "dir", enc = "A192CBC-HS384" },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(shared_key, table_of_jwt)
+            local jwt_obj = jwt:verify(shared_key, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 39: ECDH-ES with A128CBC-HS256, EC P-256
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES",
+                  enc = "A128CBC-HS256",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(get_testcert("ec_cert_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert-key.pem"), jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 40: ECDH-ES with A192CBC-HS384, EC P-521
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES",
+                  enc = "A192CBC-HS384",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(get_testcert("ec_cert_p521_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert_p521-key.pem"), jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 41: ECDH-ES with A256CBC-HS512, EC P-256
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES",
+                  enc = "A256CBC-HS512",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(get_testcert("ec_cert_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert-key.pem"), jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 42: ECDH-ES with A192GCM, EC P-384
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES",
+                  enc = "A192GCM",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(get_testcert("ec_cert_p384_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert_p384-key.pem"), jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 43: ECDH-ES+A256KW with A256CBC-HS512, EC P-384
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES+A256KW",
+                  enc = "A256CBC-HS512",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(get_testcert("ec_cert_p384_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert_p384-key.pem"), jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 44: dir wrong key returns verified false
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local sign_key = "12341234123412341234123412341234"
+            local wrong_key = "abcdabcdabcdabcdabcdabcdabcdabcd"
+            local table_of_jwt = {
+              header = { alg = "dir", enc = "A128CBC-HS256" },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(sign_key, table_of_jwt)
+            local jwt_obj = jwt:verify(wrong_key, jwt_token)
+            ngx.say(
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+verified: false
+--- no_error_log
+[error]
+
+
+=== TEST 45: A256KW wrong key fails to decrypt
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local sign_key = "0123456789abcdef0123456789abcdef"
+            local wrong_key = "abcdefghijklmnopabcdefghijklmnop"
+            local table_of_jwt = {
+              header = {
+                  alg = "A256KW",
+                  enc = "A256GCM",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(sign_key, table_of_jwt)
+            local jwt_obj = jwt:verify(wrong_key, jwt_token)
+            ngx.say(
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+verified: false
+--- no_error_log
+[error]
+
+
+=== TEST 46: RSA-OAEP-256 wrong private key fails
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local table_of_jwt = {
+              header = {
+                  alg = "RSA-OAEP-256",
+                  enc = "A256GCM",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(get_testcert("cert-pubkey.pem"), table_of_jwt)
+            -- use a different RSA private key to decrypt
+            local jwt_obj = jwt:verify(get_testcert("root-key.pem"), jwt_token)
+            ngx.say(
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+verified: false
+--- no_error_log
+[error]
+
+
+=== TEST 47: PBES2 wrong password fails to decrypt
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local table_of_jwt = {
+              header = {
+                  alg = "PBES2-HS256+A128KW",
+                  enc = "A128GCM",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign("correct-password", table_of_jwt)
+            local jwt_obj = jwt:verify("wrong-password", jwt_token)
+            ngx.say(
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+verified: false
+--- no_error_log
+[error]
+
+
+=== TEST 48: ECDH-ES wrong EC private key fails
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES",
+                  enc = "A256GCM",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            -- sign with P-256 public key, try to decrypt with P-521 private key
+            local jwt_token = jwt:sign(get_testcert("ec_cert_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert_p521-key.pem"), jwt_token)
+            ngx.say(
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+verified: false
+--- no_error_log
+[error]
+
+
+=== TEST 49: JWE with claim validation (exp/nbf)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local cjson = require "cjson"
+            local shared_key = "12341234123412341234123412341234"
+            local table_of_jwt = {
+              header = { alg = "dir", enc = "A128CBC-HS256" },
+              payload = {
+                  foo = "bar",
+                  exp = ngx.time() + 3600,
+                  nbf = ngx.time() - 60,
+              }
+            }
+            local jwt_token = jwt:sign(shared_key, table_of_jwt)
+            local jwt_obj = jwt:verify(shared_key, jwt_token, {
+                exp = validators.is_not_expired(),
+                nbf = validators.is_not_before(),
+            })
+            ngx.say(
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 50: JWE with expired claim rejected
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local cjson = require "cjson"
+            local shared_key = "12341234123412341234123412341234"
+            local table_of_jwt = {
+              header = { alg = "dir", enc = "A128CBC-HS256" },
+              payload = {
+                  foo = "bar",
+                  exp = ngx.time() - 3600,
+              }
+            }
+            local jwt_token = jwt:sign(shared_key, table_of_jwt)
+            local jwt_obj = jwt:verify(shared_key, jwt_token, {
+                exp = validators.is_not_expired(),
+            })
+            ngx.say(
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+verified: false
+--- no_error_log
+[error]
+
+
+=== TEST 51: JWE with nbf in the future rejected
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local cjson = require "cjson"
+            local shared_key = "12341234123412341234123412341234"
+            local table_of_jwt = {
+              header = { alg = "dir", enc = "A128CBC-HS256" },
+              payload = {
+                  foo = "bar",
+                  nbf = ngx.time() + 3600,
+              }
+            }
+            local jwt_token = jwt:sign(shared_key, table_of_jwt)
+            local jwt_obj = jwt:verify(shared_key, jwt_token, {
+                nbf = validators.is_not_before(),
+            })
+            ngx.say(
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+verified: false
+--- no_error_log
+[error]
+
+
+=== TEST 52: dir with A256GCM wrong key returns verified false
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local sign_key = "12341234123412341234123412341234"
+            local wrong_key = "abcdabcdabcdabcdabcdabcdabcdabcd"
+            local table_of_jwt = {
+              header = { alg = "dir", enc = "A256GCM" },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(sign_key, table_of_jwt)
+            local jwt_obj = jwt:verify(wrong_key, jwt_token)
+            ngx.say(
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+verified: false
+--- no_error_log
+[error]
+
+
+=== TEST 53: dir with wrong key length rejected
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            -- A128CBC-HS256 requires 32-byte key, try with 16-byte key
+            local table_of_jwt = {
+              header = { alg = "dir", enc = "A128CBC-HS256" },
+              payload = { foo = "bar" }
+            }
+            local success, err = pcall(function ()
+                jwt:sign("short-key-16byte", table_of_jwt)
+            end)
+            ngx.say("success: ", success)
+            if not success then
+                ngx.say("reason: ", err.reason)
+            end
+        ';
+    }
+--- request
+GET /t
+--- response_body
+success: false
+reason: invalid pre-shared key
+--- no_error_log
+[error]
+
+
+=== TEST 54: A128GCMKW wrong key fails to decrypt
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local sign_key = "0123456789abcdef"
+            local wrong_key = "abcdefghijklmnop"
+            local table_of_jwt = {
+              header = {
+                  alg = "A128GCMKW",
+                  enc = "A128GCM",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(sign_key, table_of_jwt)
+            local jwt_obj = jwt:verify(wrong_key, jwt_token)
+            ngx.say(
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+verified: false
+--- no_error_log
+[error]
+
+
+=== TEST 55: Invalid alg in JWE header rejected
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local table_of_jwt = {
+              header = {
+                  alg = "UNSUPPORTED",
+                  enc = "A256GCM",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local success, err = pcall(function ()
+                jwt:sign("12341234123412341234123412341234", table_of_jwt)
+            end)
+            ngx.say("success: ", success)
+            if not success then
+                ngx.say("has_reason: ", err.reason ~= nil)
+            end
+        ';
+    }
+--- request
+GET /t
+--- response_body
+success: false
+has_reason: true
 --- no_error_log
 [error]

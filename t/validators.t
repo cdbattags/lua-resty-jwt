@@ -7,8 +7,13 @@ plan tests => repeat_each() * (3 * blocks());
 
 our $HttpConfig = <<'_EOC_';
     lua_package_path 'lib/?.lua;;';
+_EOC_
+
+my $luacov_line = $ENV{COVERAGE} ? "      require(\"luacov\")\n" : "";
+
+$HttpConfig .= <<"_EOC_";
     init_by_lua '
-      local cjson = require "cjson.safe"
+${luacov_line}      local cjson = require "cjson.safe"
       function __runSay(fn, ...)
         local status, rslt = pcall(fn, ...)
         if status then
