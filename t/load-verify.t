@@ -115,7 +115,7 @@ alg is: HS256 foo is: bar
 [error]
 
 
-=== TEST 6: JWT load invalid part
+=== TEST 6: JWT load non-JSON payload
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -126,13 +126,15 @@ alg is: HS256 foo is: bar
                 ".eyJmb28iOiJiYXIifQbad-format" ..
                 ".signature"
             )
-            ngx.say("reason: ", jwt_obj.reason)
+            ngx.say("valid: ", jwt_obj.valid)
+            ngx.say("payload_type: ", type(jwt_obj.payload))
         ';
     }
 --- request
 GET /t
 --- response_body
-reason: invalid payload: eyJmb28iOiJiYXIifQbad-format
+valid: true
+payload_type: string
 --- no_error_log
 [error]
 

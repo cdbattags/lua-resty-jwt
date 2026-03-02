@@ -421,15 +421,19 @@ end
 -- @param encoded
 -- @param signature
 -- @return jwt table
-local function parse_jwt(encoded_header, encoded_payload, signature)
+local function parse_jwt(self, encoded_header, encoded_payload, signature)
   local header = _M:jwt_decode(encoded_header, true)
   if not header then
     error({reason="invalid header: " .. encoded_header})
   end
 
-  local payload = _M:jwt_decode(encoded_payload, true)
+  -- Try JSON decoding first; fall back to raw string for non-JSON payloads (RFC 7515)
+  local payload = _M:jwt_decode(encoded_payload, true, true)
   if not payload then
-    error({reason="invalid payload: " .. encoded_payload})
+    payload = _M:jwt_decode(encoded_payload, false)
+    if not payload then
+      error({reason="invalid payload: " .. encoded_payload})
+    end
   end
 
   local basic_jwt = {
@@ -451,7 +455,7 @@ local function parse(self, secret, token_str)
   local tokens = split_string(token_str, str_const.regex_split_dot)
   local num_tokens = #tokens
   if num_tokens == 3 then
-    return  parse_jwt(tokens[1], tokens[2], tokens[3])
+    return  parse_jwt(self, tokens[1], tokens[2], tokens[3])
   elseif num_tokens == 4  then
     return parse_jwe(self, secret, tokens[1], nil, tokens[2], tokens[3],  tokens[4])
   elseif num_tokens == 5 then
@@ -517,9 +521,11 @@ _M.alg_whitelist = nil
 --- Returns the list of default validations that will be
 --- applied upon the verification of a jwt.
 function _M.get_default_validation_options(self, jwt_obj)
+  local p = jwt_obj[str_const.payload]
+  local p_is_table = type(p) == str_const.table
   return {
-    [str_const.require_exp_claim]=jwt_obj[str_const.payload].exp ~= nil,
-    [str_const.require_nbf_claim]=jwt_obj[str_const.payload].nbf ~= nil
+    [str_const.require_exp_claim]=p_is_table and p.exp ~= nil or false,
+    [str_const.require_nbf_claim]=p_is_table and p.nbf ~= nil or false
   }
 end
 
