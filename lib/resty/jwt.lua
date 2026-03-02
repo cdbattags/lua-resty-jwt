@@ -10,7 +10,7 @@ local openssl_rand = require "resty.openssl.rand"
 local kdf = require "resty.openssl.kdf"
 local utils = require "resty.utils"
 
-local _M = { _VERSION = "0.2.4" }
+local _M = { _VERSION = "0.3.0" }
 
 local mt = {
     __index = _M
