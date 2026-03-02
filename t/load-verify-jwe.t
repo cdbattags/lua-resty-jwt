@@ -1098,7 +1098,296 @@ verified: true
 [error]
 
 
-=== TEST 26: Use ecdh-es with aes-256-gcm, EC P-256 key
+=== TEST 26: A192KW with A192GCM
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            -- 24-byte AES key for A192KW
+            local kek = "0123456789abcdef01234567"
+            local table_of_jwt = {
+              header = {
+                  alg = "A192KW",
+                  enc = "A192GCM",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(kek, table_of_jwt)
+            local jwt_obj = jwt:verify(kek, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 27: ECDH-ES+A192KW with A192CBC-HS384, EC P-256
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES+A192KW",
+                  enc = "A192CBC-HS384",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+
+            local jwt_token = jwt:sign(get_testcert("ec_cert_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert-key.pem"), jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 28: A128GCMKW with A128GCM
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local kek = "0123456789abcdef"
+            local table_of_jwt = {
+              header = {
+                  alg = "A128GCMKW",
+                  enc = "A128GCM",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(kek, table_of_jwt)
+            local jwt_obj = jwt:verify(kek, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 29: A192GCMKW with A192CBC-HS384
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local kek = "0123456789abcdef01234567"
+            local table_of_jwt = {
+              header = {
+                  alg = "A192GCMKW",
+                  enc = "A192CBC-HS384",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(kek, table_of_jwt)
+            local jwt_obj = jwt:verify(kek, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 30: A256GCMKW with A256CBC-HS512
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local kek = "0123456789abcdef0123456789abcdef"
+            local table_of_jwt = {
+              header = {
+                  alg = "A256GCMKW",
+                  enc = "A256CBC-HS512",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(kek, table_of_jwt)
+            local jwt_obj = jwt:verify(kek, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 31: PBES2-HS256+A128KW with A128GCM
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local password = "my-super-secret-password"
+            local table_of_jwt = {
+              header = {
+                  alg = "PBES2-HS256+A128KW",
+                  enc = "A128GCM",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(password, table_of_jwt)
+            local jwt_obj = jwt:verify(password, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 32: PBES2-HS384+A192KW with A192CBC-HS384
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local password = "another-password-here"
+            local table_of_jwt = {
+              header = {
+                  alg = "PBES2-HS384+A192KW",
+                  enc = "A192CBC-HS384",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(password, table_of_jwt)
+            local jwt_obj = jwt:verify(password, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 33: PBES2-HS512+A256KW with A256CBC-HS512
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local password = "yet-another-password"
+            local table_of_jwt = {
+              header = {
+                  alg = "PBES2-HS512+A256KW",
+                  enc = "A256CBC-HS512",
+                  typ = "JWE",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(password, table_of_jwt)
+            local jwt_obj = jwt:verify(password, jwt_token)
+            ngx.say(
+                cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 34: Use ecdh-es with aes-256-gcm, EC P-256 key
 --- http_config eval: $::HttpConfig
 --- config
     location /t {

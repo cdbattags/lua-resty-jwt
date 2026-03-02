@@ -6,6 +6,8 @@ local resty_random = require "resty.random"
 local cipher = require "resty.openssl.cipher"
 local pkey = require "resty.openssl.pkey"
 local digest = require "resty.openssl.digest"
+local openssl_rand = require "resty.openssl.rand"
+local kdf = require "resty.openssl.kdf"
 local utils = require "resty.utils"
 
 local _M = { _VERSION = "0.2.4" }
@@ -97,9 +99,17 @@ local str_const = {
   RSA_OAEP_512 = "RSA-OAEP-512",
   ECDH_ES = "ECDH-ES",
   ECDH_ES_A128KW = "ECDH-ES+A128KW",
+  ECDH_ES_A192KW = "ECDH-ES+A192KW",
   ECDH_ES_A256KW = "ECDH-ES+A256KW",
   A128KW = "A128KW",
+  A192KW = "A192KW",
   A256KW = "A256KW",
+  A128GCMKW = "A128GCMKW",
+  A192GCMKW = "A192GCMKW",
+  A256GCMKW = "A256GCMKW",
+  PBES2_HS256_A128KW = "PBES2-HS256+A128KW",
+  PBES2_HS384_A192KW = "PBES2-HS384+A192KW",
+  PBES2_HS512_A256KW = "PBES2-HS512+A256KW",
   DIR = "dir",
   reason = "reason",
   verified = "verified",
@@ -165,6 +175,7 @@ local keydatalen_map = {
   [str_const.A192CBC_HS384] = 384,
   [str_const.A256CBC_HS512] = 512,
   [str_const.A128KW] = 128,
+  [str_const.A192KW] = 192,
   [str_const.A256KW] = 256,
 }
 
@@ -228,8 +239,15 @@ end
 -- AES Key Wrap (RFC 3394) default IV
 local AES_KW_DEFAULT_IV = string_char(0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6)
 
+local function aes_kw_mode(kek)
+    local len = #kek
+    if len == 16 then return "aes-128-wrap"
+    elseif len == 24 then return "aes-192-wrap"
+    else return "aes-256-wrap" end
+end
+
 local function aes_key_wrap(kek, plaintext_key)
-    local mode = #kek == 16 and "aes-128-wrap" or "aes-256-wrap"
+    local mode = aes_kw_mode(kek)
     local c = assert(cipher.new(mode))
     local wrapped, err = c:encrypt(kek, AES_KW_DEFAULT_IV, plaintext_key, false)
     if not wrapped then
@@ -239,13 +257,70 @@ local function aes_key_wrap(kek, plaintext_key)
 end
 
 local function aes_key_unwrap(kek, wrapped_key)
-    local mode = #kek == 16 and "aes-128-wrap" or "aes-256-wrap"
+    local mode = aes_kw_mode(kek)
     local c = assert(cipher.new(mode))
     local unwrapped, err = c:decrypt(kek, AES_KW_DEFAULT_IV, wrapped_key, false)
     if not unwrapped then
         error({reason="AES key unwrap failed: " .. (err or "")})
     end
     return unwrapped
+end
+
+local function gcm_kw_mode(kek)
+    local len = #kek
+    if len == 16 then return "aes-128-gcm"
+    elseif len == 24 then return "aes-192-gcm"
+    else return "aes-256-gcm" end
+end
+
+local function aes_gcm_key_wrap(kek, plaintext_key)
+    local mode = gcm_kw_mode(kek)
+    local c = assert(cipher.new(mode))
+    local iv = openssl_rand.bytes(12)
+    local encrypted, err = c:encrypt(kek, iv, plaintext_key, false, nil, 16)
+    if not encrypted then
+        error({reason="AES-GCM key wrap failed: " .. (err or "")})
+    end
+    local tag = c:get_aead_tag()
+    return encrypted, iv, tag
+end
+
+local function aes_gcm_key_unwrap(kek, wrapped_key, iv, tag)
+    local mode = gcm_kw_mode(kek)
+    local c = assert(cipher.new(mode))
+    local decrypted, err = c:decrypt(kek, iv, wrapped_key, false, nil, tag)
+    if not decrypted then
+        error({reason="AES-GCM key unwrap failed: " .. (err or "")})
+    end
+    return decrypted
+end
+
+local kdf_derive = kdf.derive or kdf.derive_legacy
+
+local pbes2_config = {
+    ["PBES2-HS256+A128KW"] = { md = "sha256", keylen = 16 },
+    ["PBES2-HS384+A192KW"] = { md = "sha384", keylen = 24 },
+    ["PBES2-HS512+A256KW"] = { md = "sha512", keylen = 32 },
+}
+
+local function pbes2_derive_kek(alg, password, p2s_raw, p2c)
+    local cfg = pbes2_config[alg]
+    if not cfg then
+        error({reason="unsupported PBES2 algorithm: " .. alg})
+    end
+    local salt = alg .. string_char(0) .. p2s_raw
+    local kek, err = kdf_derive({
+        type = kdf.PBKDF2,
+        outlen = cfg.keylen,
+        pass = password,
+        salt = salt,
+        pbkdf2_iter = p2c,
+        md = cfg.md,
+    })
+    if not kek then
+        error({reason="PBES2 key derivation failed: " .. (err or "")})
+    end
+    return kek
 end
 
 --@function decrypt payload
@@ -413,8 +488,10 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   if alg ~= str_const.DIR and alg ~= str_const.RSA_OAEP
       and alg ~= str_const.RSA_OAEP_256 and alg ~= str_const.RSA_OAEP_384
       and alg ~= str_const.RSA_OAEP_512 and alg ~= str_const.ECDH_ES
-      and alg ~= str_const.ECDH_ES_A128KW and alg ~= str_const.ECDH_ES_A256KW
-      and alg ~= str_const.A128KW and alg ~= str_const.A256KW then
+      and alg ~= str_const.ECDH_ES_A128KW and alg ~= str_const.ECDH_ES_A192KW and alg ~= str_const.ECDH_ES_A256KW
+      and alg ~= str_const.A128KW and alg ~= str_const.A192KW and alg ~= str_const.A256KW
+      and alg ~= str_const.A128GCMKW and alg ~= str_const.A192GCMKW and alg ~= str_const.A256GCMKW
+      and alg ~= str_const.PBES2_HS256_A128KW and alg ~= str_const.PBES2_HS384_A192KW and alg ~= str_const.PBES2_HS512_A256KW then
     error({reason="invalid algorithm: " .. alg})
   end
 
@@ -446,7 +523,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     end
     local derived_key = derive_shared_key(header, Z)
     key, _, enc_key = derive_keys(header.enc, derived_key)
-  elseif alg == str_const.ECDH_ES_A128KW or alg == str_const.ECDH_ES_A256KW then
+  elseif alg == str_const.ECDH_ES_A128KW or alg == str_const.ECDH_ES_A192KW or alg == str_const.ECDH_ES_A256KW then
     if not preshared_key then
         error({reason="EC private key must not be null"})
     end
@@ -466,17 +543,47 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     if not Z then
         error({reason="ECDH key derivation failed: " .. (derive_err or "")})
     end
-    local kw_alg = alg == str_const.ECDH_ES_A128KW and str_const.A128KW or str_const.A256KW
+    local kw_alg_map = {
+        [str_const.ECDH_ES_A128KW] = str_const.A128KW,
+        [str_const.ECDH_ES_A192KW] = str_const.A192KW,
+        [str_const.ECDH_ES_A256KW] = str_const.A256KW,
+    }
+    local kw_alg = kw_alg_map[alg]
     local kek = derive_shared_key({ enc = kw_alg, apu = header.apu, apv = header.apv }, Z)
     local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
     local secret_key = aes_key_unwrap(kek, wrapped_key)
     key, _, enc_key = derive_keys(header.enc, secret_key)
-  elseif alg == str_const.A128KW or alg == str_const.A256KW then
+  elseif alg == str_const.A128KW or alg == str_const.A192KW or alg == str_const.A256KW then
     if not preshared_key then
         error({reason="AES key wrap key must not be null"})
     end
     local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
     local secret_key = aes_key_unwrap(preshared_key, wrapped_key)
+    key, _, enc_key = derive_keys(header.enc, secret_key)
+  elseif alg == str_const.A128GCMKW or alg == str_const.A192GCMKW or alg == str_const.A256GCMKW then
+    if not preshared_key then
+        error({reason="AES-GCM key wrap key must not be null"})
+    end
+    local kw_iv = header.iv and _M:jwt_decode(header.iv)
+    local kw_tag = header.tag and _M:jwt_decode(header.tag)
+    if not kw_iv or not kw_tag then
+        error({reason="missing iv/tag in header for AES-GCM key wrap"})
+    end
+    local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
+    local secret_key = aes_gcm_key_unwrap(preshared_key, wrapped_key, kw_iv, kw_tag)
+    key, _, enc_key = derive_keys(header.enc, secret_key)
+  elseif alg == str_const.PBES2_HS256_A128KW or alg == str_const.PBES2_HS384_A192KW or alg == str_const.PBES2_HS512_A256KW then
+    if not preshared_key then
+        error({reason="password must not be null"})
+    end
+    local p2s = header.p2s and _M:jwt_decode(header.p2s)
+    local p2c = header.p2c
+    if not p2s or not p2c then
+        error({reason="missing p2s/p2c in header for PBES2"})
+    end
+    local kek = pbes2_derive_kek(alg, preshared_key, p2s, p2c)
+    local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
+    local secret_key = aes_key_unwrap(kek, wrapped_key)
     key, _, enc_key = derive_keys(header.enc, secret_key)
   elseif alg == str_const.RSA_OAEP or alg == str_const.RSA_OAEP_256
       or alg == str_const.RSA_OAEP_384 or alg == str_const.RSA_OAEP_512 then
@@ -722,7 +829,7 @@ local function sign_jwe(self, secret_key, jwt_obj)
     local derived_key = derive_shared_key(header, Z)
     _, mac_key, enc_key = derive_keys(enc, derived_key)
     encrypted_key = ""
-  elseif alg == str_const.ECDH_ES_A128KW or alg == str_const.ECDH_ES_A256KW then
+  elseif alg == str_const.ECDH_ES_A128KW or alg == str_const.ECDH_ES_A192KW or alg == str_const.ECDH_ES_A256KW then
     local public_key, pub_err = pkey.new(secret_key)
     if not public_key then
         error({reason="failed to load EC public key: " .. (pub_err or "")})
@@ -745,13 +852,34 @@ local function sign_jwe(self, secret_key, jwt_obj)
     if not Z then
         error({reason="ECDH key derivation failed: " .. (derive_err or "")})
     end
-    local kw_alg = alg == str_const.ECDH_ES_A128KW and str_const.A128KW or str_const.A256KW
+    local kw_alg_map = {
+        [str_const.ECDH_ES_A128KW] = str_const.A128KW,
+        [str_const.ECDH_ES_A192KW] = str_const.A192KW,
+        [str_const.ECDH_ES_A256KW] = str_const.A256KW,
+    }
+    local kw_alg = kw_alg_map[alg]
     local kek = derive_shared_key({ enc = kw_alg, apu = header.apu, apv = header.apv }, Z)
     key, mac_key, enc_key = derive_keys(enc)
     encrypted_key = aes_key_wrap(kek, key)
-  elseif alg == str_const.A128KW or alg == str_const.A256KW then
+  elseif alg == str_const.A128KW or alg == str_const.A192KW or alg == str_const.A256KW then
     key, mac_key, enc_key = derive_keys(enc)
     encrypted_key = aes_key_wrap(secret_key, key)
+  elseif alg == str_const.A128GCMKW or alg == str_const.A192GCMKW or alg == str_const.A256GCMKW then
+    key, mac_key, enc_key = derive_keys(enc)
+    local wrapped, kw_iv, kw_tag = aes_gcm_key_wrap(secret_key, key)
+    encrypted_key = wrapped
+    header.iv = _M:jwt_encode(kw_iv)
+    header.tag = _M:jwt_encode(kw_tag)
+    encoded_header = _M:jwt_encode(header)
+  elseif alg == str_const.PBES2_HS256_A128KW or alg == str_const.PBES2_HS384_A192KW or alg == str_const.PBES2_HS512_A256KW then
+    local p2s = openssl_rand.bytes(16)
+    local p2c = 4096
+    header.p2s = _M:jwt_encode(p2s)
+    header.p2c = p2c
+    encoded_header = _M:jwt_encode(header)
+    local kek = pbes2_derive_kek(alg, secret_key, p2s, p2c)
+    key, mac_key, enc_key = derive_keys(enc)
+    encrypted_key = aes_key_wrap(kek, key)
   elseif alg == str_const.RSA_OAEP or alg == str_const.RSA_OAEP_256
       or alg == str_const.RSA_OAEP_384 or alg == str_const.RSA_OAEP_512 then
     local cert, err
