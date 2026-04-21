@@ -2161,6 +2161,7 @@ has_reason: true
         content_by_lua '
             local jwt = require "resty.jwt"
             local cjson = require "cjson"
+            jwt:register_zlib_compression(require "zlib")
             local shared_key = "12341234123412341234123412341234"
             local table_of_jwt = {
               header = {
@@ -2199,6 +2200,7 @@ verified: true
         content_by_lua '
             local jwt = require "resty.jwt"
             local cjson = require "cjson"
+            jwt:register_zlib_compression(require "zlib")
             local function get_testcert(name)
                 local f = io.open("/lua-resty-jwt/testcerts/" .. name)
                 local contents = f:read("*all")
@@ -2242,6 +2244,7 @@ verified: true
         content_by_lua '
             local jwt = require "resty.jwt"
             local cjson = require "cjson"
+            jwt:register_zlib_compression(require "zlib")
             local function get_testcert(name)
                 local f = io.open("/lua-resty-jwt/testcerts/" .. name)
                 local contents = f:read("*all")
@@ -2284,6 +2287,7 @@ verified: true
     location /t {
         content_by_lua '
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression(require "zlib")
             local shared_key = "12341234123412341234123412341234"
             local big = string.rep("compressible-payload-chunk-", 200)
             local plain = jwt:sign(shared_key, {
@@ -2421,5 +2425,33 @@ deflate_calls: 1
 inflate_calls: 1
 payload: {"foo":"bar"}
 verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 63: zip=DEF rejected on sign when compression not enabled
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local shared_key = "12341234123412341234123412341234"
+            local success, err = pcall(function ()
+                jwt:sign(shared_key, {
+                    header = { typ = "JWE", alg = "dir", enc = "A128CBC-HS256", zip = "DEF" },
+                    payload = { foo = "bar" }
+                })
+            end)
+            ngx.say("success: ", success)
+            if not success then
+                ngx.say("reason: ", err.reason)
+            end
+        ';
+    }
+--- request
+GET /t
+--- response_body
+success: false
+reason: unsupported zip: DEF
 --- no_error_log
 [error]

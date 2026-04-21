@@ -489,41 +489,12 @@ end
 
 -- Registry for JWE "zip" header parameter handlers (RFC 7516 §4.1.3).
 -- Each handler is a table { deflate = fn(bytes)->bytes,err  inflate = fn(bytes)->bytes,err }.
+-- Intentionally empty by default: compression-then-encryption is vulnerable to
+-- CRIME/BREACH-style side-channel attacks when an attacker can influence part of
+-- the plaintext, so callers must explicitly opt in — either via
+-- jwt:register_zlib_compression(require "zlib") (which binds "DEF" to lua-zlib)
+-- or by registering their own handler with jwt:register_compression_alg.
 local compression_algs = {}
-
--- Build the default "DEF" handler (raw DEFLATE per RFC 1951, windowBits = -15)
--- on first use, so that lua-zlib remains an optional dependency.
-local function build_default_def_handler()
-  local ok, zlib = pcall(require, "zlib")
-  if not ok then
-    local err_msg = "lua-zlib is not installed; install it (luarocks install lua-zlib) "
-                 .. "or register a custom 'DEF' handler via jwt:register_compression_alg"
-    return {
-      deflate = function() return nil, err_msg end,
-      inflate = function() return nil, err_msg end,
-    }
-  end
-  return {
-    deflate = function(data)
-      local stream = zlib.deflate(zlib.BEST_COMPRESSION, -15)
-      local ok2, compressed = pcall(stream, data, "finish")
-      if not ok2 then
-        return nil, tostring(compressed)
-      end
-      return compressed
-    end,
-    inflate = function(data)
-      local stream = zlib.inflate(-15)
-      local ok2, decompressed = pcall(stream, data, "finish")
-      if not ok2 then
-        return nil, tostring(decompressed)
-      end
-      return decompressed
-    end,
-  }
-end
-
-compression_algs[str_const.DEF] = build_default_def_handler()
 
 --@function parse_jwe
 --@param pre-shared key
@@ -1502,9 +1473,9 @@ function _M.set_payload_decoder(self, decoder)
 end
 
 
--- Register or override a handler for the JWE "zip" header parameter.
--- `handler` must be a table with function fields `deflate` and `inflate`,
--- each taking a byte string and returning (bytes) or (nil, err).
+--@function register_compression_alg : register a handler for the given JWE "zip" header value
+--@param name : the `zip` header value to bind (e.g. "DEF")
+--@param handler : a table { deflate = fn(bytes)->bytes,err  inflate = fn(bytes)->bytes,err }
 function _M.register_compression_alg(self, name, handler)
   if type(name) ~= "string" or name == "" then
     error({reason="compression alg name must be a non-empty string"})
@@ -1515,6 +1486,42 @@ function _M.register_compression_alg(self, name, handler)
     error({reason="compression handler must be a table with deflate and inflate functions"})
   end
   compression_algs[name] = handler
+end
+
+
+--@function register_zlib_compression : bind the JWE "DEF" zip alg to a caller-supplied lua-zlib module
+--@param zlib : a lua-zlib-compatible module (typically the result of `require "zlib"`).
+--              Passing it in keeps the dependency caller-owned and makes the call itself the opt-in.
+--              JWE compression is disabled by default because compress-then-encrypt leaks
+--              information about plaintext through ciphertext length (CRIME / BREACH family);
+--              only enable it when attacker-chosen plaintext cannot be mixed with secrets.
+--              Note: DEFLATE can expand modest inputs into very large outputs ("decompression
+--              bombs"); consumers that accept untrusted JWEs should bound the ciphertext size
+--              before calling verify/load to keep the inflate step's memory cost predictable.
+function _M.register_zlib_compression(self, zlib)
+  if type(zlib) ~= "table"
+      or type(zlib.deflate) ~= "function"
+      or type(zlib.inflate) ~= "function" then
+    error({reason="zlib module must expose deflate and inflate functions (pass `require \"zlib\"`)"})
+  end
+  _M.register_compression_alg(self, str_const.DEF, {
+    deflate = function(data)
+      local stream = zlib.deflate(zlib.BEST_COMPRESSION, -15)
+      local ok, compressed = pcall(stream, data, "finish")
+      if not ok then
+        return nil, tostring(compressed)
+      end
+      return compressed
+    end,
+    inflate = function(data)
+      local stream = zlib.inflate(-15)
+      local ok, decompressed = pcall(stream, data, "finish")
+      if not ok then
+        return nil, tostring(decompressed)
+      end
+      return decompressed
+    end,
+  })
 end
 
 
