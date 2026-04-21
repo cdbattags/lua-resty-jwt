@@ -121,6 +121,8 @@ local str_const = {
   PBES2_HS384_A192KW = "PBES2-HS384+A192KW",
   PBES2_HS512_A256KW = "PBES2-HS512+A256KW",
   DIR = "dir",
+  zip = "zip",
+  DEF = "DEF",
   reason = "reason",
   verified = "verified",
   number = "number",
@@ -745,6 +747,44 @@ local function crit_error(self, header)
   return nil
 end
 
+-- Registry for JWE "zip" header parameter handlers (RFC 7516 §4.1.3).
+-- Each handler is a table { deflate = fn(bytes)->bytes,err  inflate = fn(bytes)->bytes,err }.
+local compression_algs = {}
+
+-- Build the default "DEF" handler (raw DEFLATE per RFC 1951, windowBits = -15)
+-- on first use, so that lua-zlib remains an optional dependency.
+local function build_default_def_handler()
+  local ok, zlib = pcall(require, "zlib")
+  if not ok then
+    local err_msg = "lua-zlib is not installed; install it (luarocks install lua-zlib) "
+                 .. "or register a custom 'DEF' handler via jwt:register_compression_alg"
+    return {
+      deflate = function() return nil, err_msg end,
+      inflate = function() return nil, err_msg end,
+    }
+  end
+  return {
+    deflate = function(data)
+      local stream = zlib.deflate(zlib.BEST_COMPRESSION, -15)
+      local ok2, compressed = pcall(stream, data, "finish")
+      if not ok2 then
+        return nil, tostring(compressed)
+      end
+      return compressed
+    end,
+    inflate = function(data)
+      local stream = zlib.inflate(-15)
+      local ok2, decompressed = pcall(stream, data, "finish")
+      if not ok2 then
+        return nil, tostring(decompressed)
+      end
+      return decompressed
+    end,
+  }
+end
+
+compression_algs[str_const.DEF] = build_default_def_handler()
+
 --@function parse_jwe
 --@param pre-shared key
 --@encoded-header
@@ -938,6 +978,18 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   local payload, err = decrypt_payload(enc_key, cipher_text, header.enc, iv, encoded_header, signature_or_tag)
   if err or not payload then
     jwe_decrypt_error("content decryption failed: " .. (err or ""))
+  end
+
+  if header.zip then
+    local handler = compression_algs[header.zip]
+    if not handler then
+      error({reason="unsupported zip: " .. header.zip})
+    end
+    local inflated, zerr = handler.inflate(payload)
+    if zerr or not inflated then
+      error({reason="failed to decompress payload: " .. (zerr or "unknown error")})
+    end
+    payload = inflated
   end
 
   return {
@@ -1271,6 +1323,17 @@ local function sign_jwe(self, secret_key, jwt_obj)
   local key, encrypted_key, mac_key, enc_key, _
   local encoded_header = _M:jwt_encode(header)
   local payload_to_encrypt = get_payload_encoder(self)(jwt_obj.payload)
+  if header.zip then
+    local handler = compression_algs[header.zip]
+    if not handler then
+      error({reason="unsupported zip: " .. header.zip})
+    end
+    local compressed, zerr = handler.deflate(payload_to_encrypt)
+    if zerr or not compressed then
+      error({reason="failed to compress payload: " .. (zerr or "unknown error")})
+    end
+    payload_to_encrypt = compressed
+  end
   if alg ==  str_const.DIR then
     _, mac_key, enc_key = derive_keys(enc, secret_key)
     encrypted_key = ""
@@ -2165,6 +2228,22 @@ function _M.set_payload_decoder(self, decoder)
     error({reason="payload decoder must be function"})
   end
   self.payload_decoder= decoder
+end
+
+
+-- Register or override a handler for the JWE "zip" header parameter.
+-- `handler` must be a table with function fields `deflate` and `inflate`,
+-- each taking a byte string and returning (bytes) or (nil, err).
+function _M.register_compression_alg(self, name, handler)
+  if type(name) ~= "string" or name == "" then
+    error({reason="compression alg name must be a non-empty string"})
+  end
+  if type(handler) ~= "table"
+      or type(handler.deflate) ~= "function"
+      or type(handler.inflate) ~= "function" then
+    error({reason="compression handler must be a table with deflate and inflate functions"})
+  end
+  compression_algs[name] = handler
 end
 
 
