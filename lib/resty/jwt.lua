@@ -518,6 +518,11 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     error({reason="invalid algorithm: " .. alg})
   end
 
+  -- Fail fast on unsupported compression before doing any expensive crypto work.
+  if header.zip and not compression_algs[header.zip] then
+    error({reason="unsupported zip: " .. header.zip})
+  end
+
   local key, enc_key, _
   if alg == str_const.DIR then
     if not preshared_key  then
