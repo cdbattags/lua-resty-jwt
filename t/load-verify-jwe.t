@@ -2152,3 +2152,274 @@ success: false
 has_reason: true
 --- no_error_log
 [error]
+
+
+=== TEST 56: Round-trip dir + A128CBC-HS256 with zip=DEF
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local shared_key = "12341234123412341234123412341234"
+            local table_of_jwt = {
+              header = {
+                  typ = "JWE",
+                  alg = "dir",
+                  enc = "A128CBC-HS256",
+                  zip = "DEF",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(shared_key, table_of_jwt)
+            local jwt_obj = jwt:verify(shared_key, jwt_token)
+            ngx.say(
+                "zip: ", jwt_obj.header.zip, "\\n",
+                "payload_match: ", cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+zip: DEF
+payload_match: true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 57: Round-trip RSA-OAEP-256 + A256GCM with zip=DEF
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local table_of_jwt = {
+              header = {
+                  alg = "RSA-OAEP-256",
+                  enc = "A256GCM",
+                  typ = "JWE",
+                  zip = "DEF",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(get_testcert("cert-pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("cert-key.pem"), jwt_token)
+            ngx.say(
+                "zip: ", jwt_obj.header.zip, "\\n",
+                "payload_match: ", cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+zip: DEF
+payload_match: true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 58: Round-trip ECDH-ES + A128CBC-HS256 with zip=DEF
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local table_of_jwt = {
+              header = {
+                  alg = "ECDH-ES",
+                  enc = "A128CBC-HS256",
+                  typ = "JWE",
+                  zip = "DEF",
+              },
+              payload = { foo = "bar" }
+            }
+            local jwt_token = jwt:sign(get_testcert("ec_cert_pubkey.pem"), table_of_jwt)
+            local jwt_obj = jwt:verify(get_testcert("ec_cert-key.pem"), jwt_token)
+            ngx.say(
+                "zip: ", jwt_obj.header.zip, "\\n",
+                "payload_match: ", cjson.encode(table_of_jwt.payload) == cjson.encode(jwt_obj.payload), "\\n",
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+zip: DEF
+payload_match: true
+valid: true
+verified: true
+--- no_error_log
+[error]
+
+
+=== TEST 59: zip=DEF meaningfully shrinks a compressible payload
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local shared_key = "12341234123412341234123412341234"
+            local big = string.rep("compressible-payload-chunk-", 200)
+            local plain = jwt:sign(shared_key, {
+              header = { typ = "JWE", alg = "dir", enc = "A128CBC-HS256" },
+              payload = { data = big }
+            })
+            local zipped = jwt:sign(shared_key, {
+              header = { typ = "JWE", alg = "dir", enc = "A128CBC-HS256", zip = "DEF" },
+              payload = { data = big }
+            })
+            ngx.say("shrunk: ", #zipped < #plain / 2)
+            local jwt_obj = jwt:verify(shared_key, zipped)
+            ngx.say(
+                "valid: ", jwt_obj.valid, "\\n",
+                "verified: ", jwt_obj.verified, "\\n",
+                "payload_ok: ", jwt_obj.payload.data == big
+            )
+        ';
+    }
+--- request
+GET /t
+--- response_body
+shrunk: true
+valid: true
+verified: true
+payload_ok: true
+--- no_error_log
+[error]
+
+
+=== TEST 60: Unsupported zip value rejected on sign
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local shared_key = "12341234123412341234123412341234"
+            local success, err = pcall(function ()
+                jwt:sign(shared_key, {
+                    header = { typ = "JWE", alg = "dir", enc = "A128CBC-HS256", zip = "FOO" },
+                    payload = { foo = "bar" }
+                })
+            end)
+            ngx.say("success: ", success)
+            if not success then
+                ngx.say("reason: ", err.reason)
+            end
+        ';
+    }
+--- request
+GET /t
+--- response_body
+success: false
+reason: unsupported zip: FOO
+--- no_error_log
+[error]
+
+
+=== TEST 61: Decrypt rejects token whose zip handler reports error
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local shared_key = "12341234123412341234123412341234"
+            -- Produce a well-formed token with zip=DISABLED using a working
+            -- stub, then swap the handler so that inflate always errors.
+            jwt:register_compression_alg("DISABLED", {
+                deflate = function(d) return d end,
+                inflate = function(d) return d end,
+            })
+            local token = jwt:sign(shared_key, {
+                header = { typ = "JWE", alg = "dir", enc = "A128CBC-HS256", zip = "DISABLED" },
+                payload = { foo = "bar" }
+            })
+            jwt:register_compression_alg("DISABLED", {
+                deflate = function() return nil, "broken" end,
+                inflate = function() return nil, "broken" end,
+            })
+            local jwt_obj = jwt:verify(shared_key, token)
+            ngx.say("verified: ", jwt_obj.verified)
+            ngx.say("reason: ", jwt_obj.reason)
+        ';
+    }
+--- request
+GET /t
+--- response_body
+verified: false
+reason: failed to decompress payload: broken
+--- no_error_log
+[error]
+
+
+=== TEST 62: Custom compression handler is invoked on sign and verify
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson"
+            local shared_key = "12341234123412341234123412341234"
+            local deflate_calls, inflate_calls = 0, 0
+            local function xor_bytes(d)
+                local out = {}
+                for i = 1, #d do
+                    out[i] = string.char(bit.bxor(string.byte(d, i), 0x55))
+                end
+                return table.concat(out)
+            end
+            jwt:register_compression_alg("XOR", {
+                deflate = function(d)
+                    deflate_calls = deflate_calls + 1
+                    return xor_bytes(d)
+                end,
+                inflate = function(d)
+                    inflate_calls = inflate_calls + 1
+                    return xor_bytes(d)
+                end,
+            })
+            local token = jwt:sign(shared_key, {
+                header = { typ = "JWE", alg = "dir", enc = "A128CBC-HS256", zip = "XOR" },
+                payload = { foo = "bar" }
+            })
+            local jwt_obj = jwt:verify(shared_key, token)
+            ngx.say("deflate_calls: ", deflate_calls)
+            ngx.say("inflate_calls: ", inflate_calls)
+            ngx.say("payload: ", cjson.encode(jwt_obj.payload))
+            ngx.say("verified: ", jwt_obj.verified)
+        ';
+    }
+--- request
+GET /t
+--- response_body
+deflate_calls: 1
+inflate_calls: 1
+payload: {"foo":"bar"}
+verified: true
+--- no_error_log
+[error]

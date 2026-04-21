@@ -11,7 +11,9 @@ docker run \
   --name lua-resty-jwt-coverage \
   "$IMAGE" \
   -c '
+    dpkg -s zlib1g-dev >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y --no-install-recommends zlib1g-dev)
     luarocks install luacov
+    luarocks install lua-zlib 1.3-0
     luarocks make lua-resty-jwt-dev-0.rockspec
 
     rm -f luacov.stats.out luacov.report.out

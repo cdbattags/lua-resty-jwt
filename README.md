@@ -35,6 +35,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [set_alg_whitelist](#set_alg_whitelist)
     * [set_trusted_certs_file](#set_trusted_certs_file)
     * [sign JWE](#sign-jwe)
+    * [register_compression_alg](#register_compression_alg)
 * [Verification](#verification)
     * [JWT Validators](#jwt-validators)
     * [Legacy/Timeframe options](#legacy-timeframe-options)
@@ -199,6 +200,12 @@ sign a table_of_jwt to a jwt_token.
 The `alg` argument specifies which key management algorithm to use (`dir`, `RSA-OAEP`, `RSA-OAEP-256`, `ECDH-ES`).
 The `enc` argument specifies which content encryption algorithm to use (`A128CBC-HS256`, `A256CBC-HS512`, `A128GCM`, `A256GCM`).
 
+The optional `zip` header parameter (RFC 7516 §4.1.3) enables payload compression before
+encryption. The only standards-registered value is `DEF` (raw DEFLATE per RFC 1951),
+which is handled out-of-the-box when [lua-zlib](https://github.com/brimworks/lua-zlib)
+is installed (`luarocks install lua-zlib`). The same header is honored on
+`jwt:verify` / `jwt:load_jwt`.
+
 ### sample of table_of_jwt ###
 
 ```
@@ -206,6 +213,34 @@ The `enc` argument specifies which content encryption algorithm to use (`A128CBC
     "header": {"typ": "JWE", "alg": "dir", "enc":"A128CBC-HS256"},
     "payload": {"foo": "bar"}
 }
+```
+
+### sample with DEFLATE compression ###
+
+```
+{
+    "header": {"typ": "JWE", "alg": "dir", "enc":"A128CBC-HS256", "zip": "DEF"},
+    "payload": {"foo": "bar"}
+}
+```
+
+## register_compression_alg
+
+`syntax: jwt:register_compression_alg(name, { deflate = fn, inflate = fn })`
+
+Register or override the handler used for a given JWE `zip` header value. The
+default `DEF` handler is registered at load time using `lua-zlib`; call this if
+you want to swap in a different DEFLATE implementation (pure-Lua, FFI, etc.) or
+if `lua-zlib` is not available in your environment.
+
+`deflate` and `inflate` each take a byte string and must return either a byte
+string on success, or `nil, err` on failure.
+
+```lua
+jwt:register_compression_alg("DEF", {
+    deflate = function(data) return my_compress(data) end,
+    inflate = function(data) return my_decompress(data) end,
+})
 ```
 
 [Back to TOC](#table-of-contents)

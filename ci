@@ -10,4 +10,4 @@ docker run \
   -w /lua-resty-jwt \
   --name lua-resty-jwt-tests \
   "$IMAGE" \
-  -c 'luarocks make lua-resty-jwt-dev-0.rockspec && prove -j4 -r t; rc=$?; rm -rf t/servroot_* 2>/dev/null; exit $rc'
+  -c '(dpkg -s zlib1g-dev >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y --no-install-recommends zlib1g-dev)) && luarocks install lua-zlib 1.3-0 && luarocks make lua-resty-jwt-dev-0.rockspec && prove -j4 -r t; rc=$?; rm -rf t/servroot_* 2>/dev/null; exit $rc'
