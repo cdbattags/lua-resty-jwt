@@ -111,6 +111,8 @@ local str_const = {
   PBES2_HS384_A192KW = "PBES2-HS384+A192KW",
   PBES2_HS512_A256KW = "PBES2-HS512+A256KW",
   DIR = "dir",
+  zip = "zip",
+  DEF = "DEF",
   reason = "reason",
   verified = "verified",
   number = "number",
@@ -485,6 +487,15 @@ local function get_payload_decoder(self)
     return self.payload_decoder or cjson_decode
 end
 
+-- Registry for JWE "zip" header parameter handlers (RFC 7516 §4.1.3).
+-- Each handler is a table { deflate = fn(bytes)->bytes,err  inflate = fn(bytes)->bytes,err }.
+-- Intentionally empty by default: compression-then-encryption is vulnerable to
+-- CRIME/BREACH-style side-channel attacks when an attacker can influence part of
+-- the plaintext, so callers must explicitly opt in — either via
+-- jwt:register_zlib_compression(require "zlib") (which binds "DEF" to lua-zlib)
+-- or by registering their own handler with jwt:register_compression_alg.
+local compression_algs = {}
+
 --@function parse_jwe
 --@param pre-shared key
 --@encoded-header
@@ -505,6 +516,11 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
       and alg ~= str_const.A128GCMKW and alg ~= str_const.A192GCMKW and alg ~= str_const.A256GCMKW
       and alg ~= str_const.PBES2_HS256_A128KW and alg ~= str_const.PBES2_HS384_A192KW and alg ~= str_const.PBES2_HS512_A256KW then
     error({reason="invalid algorithm: " .. alg})
+  end
+
+  -- Fail fast on unsupported compression before doing any expensive crypto work.
+  if header.zip and not compression_algs[header.zip] then
+    error({reason="unsupported zip: " .. header.zip})
   end
 
   local key, enc_key, _
@@ -640,6 +656,17 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     error({reason="failed to decrypt payload: " .. err})
 
   else
+    if header.zip then
+      local handler = compression_algs[header.zip]
+      if not handler then
+        error({reason="unsupported zip: " .. header.zip})
+      end
+      local inflated, zerr = handler.inflate(payload)
+      if zerr or not inflated then
+        error({reason="failed to decompress payload: " .. (zerr or "unknown error")})
+      end
+      payload = inflated
+    end
     basic_jwe.payload = get_payload_decoder(self)(payload)
     basic_jwe.internal.json_payload=payload
   end
@@ -812,6 +839,17 @@ local function sign_jwe(self, secret_key, jwt_obj)
   local key, encrypted_key, mac_key, enc_key, _
   local encoded_header = _M:jwt_encode(header)
   local payload_to_encrypt = get_payload_encoder(self)(jwt_obj.payload)
+  if header.zip then
+    local handler = compression_algs[header.zip]
+    if not handler then
+      error({reason="unsupported zip: " .. header.zip})
+    end
+    local compressed, zerr = handler.deflate(payload_to_encrypt)
+    if zerr or not compressed then
+      error({reason="failed to compress payload: " .. (zerr or "unknown error")})
+    end
+    payload_to_encrypt = compressed
+  end
   if alg ==  str_const.DIR then
     _, mac_key, enc_key = derive_keys(enc, secret_key)
     encrypted_key = ""
@@ -1437,6 +1475,58 @@ function _M.set_payload_decoder(self, decoder)
     error({reason="payload decoder must be function"})
   end
   self.payload_decoder= decoder
+end
+
+
+--@function register_compression_alg : register a handler for the given JWE "zip" header value
+--@param name : the `zip` header value to bind (e.g. "DEF")
+--@param handler : a table { deflate = fn(bytes)->bytes,err  inflate = fn(bytes)->bytes,err }
+function _M.register_compression_alg(self, name, handler)
+  if type(name) ~= "string" or name == "" then
+    error({reason="compression alg name must be a non-empty string"})
+  end
+  if type(handler) ~= "table"
+      or type(handler.deflate) ~= "function"
+      or type(handler.inflate) ~= "function" then
+    error({reason="compression handler must be a table with deflate and inflate functions"})
+  end
+  compression_algs[name] = handler
+end
+
+
+--@function register_zlib_compression : bind the JWE "DEF" zip alg to a caller-supplied lua-zlib module
+--@param zlib : a lua-zlib-compatible module (typically the result of `require "zlib"`).
+--              Passing it in keeps the dependency caller-owned and makes the call itself the opt-in.
+--              JWE compression is disabled by default because compress-then-encrypt leaks
+--              information about plaintext through ciphertext length (CRIME / BREACH family);
+--              only enable it when attacker-chosen plaintext cannot be mixed with secrets.
+--              Note: DEFLATE can expand modest inputs into very large outputs ("decompression
+--              bombs"); consumers that accept untrusted JWEs should bound the ciphertext size
+--              before calling verify/load to keep the inflate step's memory cost predictable.
+function _M.register_zlib_compression(self, zlib)
+  if type(zlib) ~= "table"
+      or type(zlib.deflate) ~= "function"
+      or type(zlib.inflate) ~= "function" then
+    error({reason="zlib module must expose deflate and inflate functions (pass `require \"zlib\"`)"})
+  end
+  _M.register_compression_alg(self, str_const.DEF, {
+    deflate = function(data)
+      local stream = zlib.deflate(zlib.BEST_COMPRESSION, -15)
+      local ok, compressed = pcall(stream, data, "finish")
+      if not ok then
+        return nil, tostring(compressed)
+      end
+      return compressed
+    end,
+    inflate = function(data)
+      local stream = zlib.inflate(-15)
+      local ok, decompressed = pcall(stream, data, "finish")
+      if not ok then
+        return nil, tostring(decompressed)
+      end
+      return decompressed
+    end,
+  })
 end
 
 

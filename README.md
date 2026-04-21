@@ -35,6 +35,8 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [set_alg_whitelist](#set_alg_whitelist)
     * [set_trusted_certs_file](#set_trusted_certs_file)
     * [sign JWE](#sign-jwe)
+    * [register_zlib_compression](#register_zlib_compression)
+    * [register_compression_alg](#register_compression_alg)
 * [Verification](#verification)
     * [JWT Validators](#jwt-validators)
     * [Legacy/Timeframe options](#legacy-timeframe-options)
@@ -199,6 +201,30 @@ sign a table_of_jwt to a jwt_token.
 The `alg` argument specifies which key management algorithm to use (`dir`, `RSA-OAEP`, `RSA-OAEP-256`, `ECDH-ES`).
 The `enc` argument specifies which content encryption algorithm to use (`A128CBC-HS256`, `A256CBC-HS512`, `A128GCM`, `A256GCM`).
 
+The optional `zip` header parameter (RFC 7516 §4.1.3) enables payload compression
+before encryption. **Compression is disabled by default** because compress-then-encrypt
+leaks information about the plaintext through the resulting ciphertext length
+(CRIME / BREACH family of attacks), and a token that arrives with a `zip` header
+will be rejected with `unsupported zip: …` unless a handler has been registered.
+
+To opt in to the built-in `DEF` handler (raw DEFLATE per RFC 1951), install
+[lua-zlib](https://github.com/brimworks/lua-zlib) and hand the module to
+`jwt:register_zlib_compression` once during startup. Passing the module
+explicitly keeps `lua-zlib` an optional dependency of this library and makes
+the opt-in step unambiguous:
+
+```
+luarocks install lua-zlib
+```
+
+```lua
+local jwt = require "resty.jwt"
+jwt:register_zlib_compression(require "zlib")
+```
+
+Alternatively, register your own handler (pure-Lua, FFI, or a different alg
+name entirely) via `jwt:register_compression_alg` — see below.
+
 ### sample of table_of_jwt ###
 
 ```
@@ -207,6 +233,55 @@ The `enc` argument specifies which content encryption algorithm to use (`A128CBC
     "payload": {"foo": "bar"}
 }
 ```
+
+### sample with DEFLATE compression ###
+
+```
+{
+    "header": {"typ": "JWE", "alg": "dir", "enc":"A128CBC-HS256", "zip": "DEF"},
+    "payload": {"foo": "bar"}
+}
+```
+
+## register_zlib_compression
+
+`syntax: jwt:register_zlib_compression(zlib_module)`
+
+Register the `DEF` (raw DEFLATE per RFC 1951) compression handler using a
+caller-supplied [lua-zlib](https://github.com/brimworks/lua-zlib)-compatible
+module. Passing the module explicitly keeps `lua-zlib` an optional dependency
+and makes JWE compression opt-in; see the security note under
+[sign-jwe](#sign-jwe).
+
+```lua
+jwt:register_zlib_compression(require "zlib")
+```
+
+## register_compression_alg
+
+`syntax: jwt:register_compression_alg(name, { deflate = fn, inflate = fn })`
+
+Register or override the handler used for a given JWE `zip` header value. Use
+this to swap in an alternate DEFLATE implementation (pure-Lua, FFI, etc.) or to
+support a non-standard `zip` value. No `zip` handler is registered out of the
+box — see [register_zlib_compression](#register_zlib_compression) for the
+standard `DEF` case.
+
+`deflate` and `inflate` each take a byte string and must return either a byte
+string on success, or `nil, err` on failure.
+
+```lua
+jwt:register_compression_alg("DEF", {
+    deflate = function(data) return my_compress(data) end,
+    inflate = function(data) return my_decompress(data) end,
+})
+```
+
+For a concrete reference implementation, see how
+[`register_zlib_compression`](#register_zlib_compression) wires `lua-zlib` into
+this API in `lib/resty/jwt.lua` — it builds the `{ deflate, inflate }` pair
+around the zlib streaming API (with `windowBits = -15` for raw DEFLATE per
+RFC 1951) and hands it straight to `register_compression_alg`.
 
 [Back to TOC](#table-of-contents)
 
