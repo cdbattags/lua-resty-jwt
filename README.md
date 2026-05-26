@@ -33,6 +33,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [verify](#verify)
     * [load and verify](#load--verify)
     * [set_alg_whitelist](#set_alg_whitelist)
+    * [set_typ_whitelist](#set_typ_whitelist)
     * [set_trusted_certs_file](#set_trusted_certs_file)
     * [sign JWE](#sign-jwe)
 * [Verification](#verification)
@@ -183,6 +184,32 @@ local jwt_obj = jwt:verify(public_key, jwt_token)
 ```
 
 Pass `nil` to clear the whitelist and allow all algorithms again.
+
+## set_typ_whitelist
+
+`syntax: jwt:set_typ_whitelist(typs)`
+
+`sign` validates the `typ` header value you supply against this whitelist *before* performing any signing or encryption. If the value isn't whitelisted, `sign` raises `invalid typ: <value>` and produces no token. Pass a table whose keys are the allowed typ values. Tokens that don't set a `typ` header are unaffected.
+
+The default whitelist accepts `JWT` (RFC 7519), `JWE` (RFC 7516), and the RFC-registered `+jwt` structured-syntax values:
+
+- `at+jwt` — RFC 9068 (JWT Profile for OAuth 2.0 Access Tokens)
+- `dpop+jwt` — RFC 9449 (Demonstrating Proof of Possession)
+- `token-introspection+jwt` — RFC 9701 (JWT Response for OAuth Token Introspection)
+- `client-authentication+jwt` — draft-ietf-oauth-rfc7523bis
+- `secevent+jwt` — RFC 8417 (Security Event Token)
+- `logout+jwt` — OpenID Connect Back-Channel Logout 1.0
+
+```lua
+local jwt = require "resty.jwt"
+
+-- Allow only JWT and a custom value
+jwt:set_typ_whitelist({ JWT = 1, ["my-custom+jwt"] = 1 })
+```
+
+Pass `nil` to disable typ validation entirely — any value (or no value) is then accepted. Pass `{}` (an empty table) to reject every typ value, including `JWT`/`JWE`.
+
+Note: this whitelist is consulted only during `sign`. The `verify`/`load` path does not validate `header.typ`. If you need to enforce a specific typ on incoming tokens (e.g. `at+jwt` per RFC 9068), attach a `__jwt` validator that inspects the parsed header — see [Verification](#verification) for details.
 
 ## set_trusted_certs_file
 

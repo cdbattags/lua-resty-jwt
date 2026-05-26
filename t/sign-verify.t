@@ -874,3 +874,167 @@ everything is awesome~ :p
 bar
 --- no_error_log
 [error]
+
+
+
+=== TEST 25: Default typ whitelist accepts at+jwt (RFC 9068)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local jwt_token = jwt:sign(
+                "lua-resty-jwt",
+                {
+                    header={typ="at+jwt", alg="HS256"},
+                    payload={foo="bar"}
+                }
+            )
+            local jwt_obj = jwt:verify("lua-resty-jwt", jwt_token)
+            ngx.say(jwt_obj["verified"])
+            ngx.say(jwt_obj["header"]["typ"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+at+jwt
+--- no_error_log
+[error]
+
+
+
+=== TEST 26: Default typ whitelist accepts dpop+jwt (RFC 9449)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local jwt_token = jwt:sign(
+                "lua-resty-jwt",
+                {
+                    header={typ="dpop+jwt", alg="HS256"},
+                    payload={foo="bar"}
+                }
+            )
+            local jwt_obj = jwt:verify("lua-resty-jwt", jwt_token)
+            ngx.say(jwt_obj["verified"])
+            ngx.say(jwt_obj["header"]["typ"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+dpop+jwt
+--- no_error_log
+[error]
+
+
+
+=== TEST 27: Default typ whitelist rejects unknown typ
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            local success, err = pcall(function () jwt:sign(
+                "lua-resty-jwt",
+                {
+                    header={typ="custom", alg="HS256"},
+                    payload={foo="bar"}
+                }
+            ) end)
+            ngx.say(err.reason)
+        ';
+    }
+--- request
+GET /t
+--- response_body
+invalid typ: custom
+--- no_error_log
+[error]
+
+
+
+=== TEST 28: set_typ_whitelist replaces defaults
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            jwt:set_typ_whitelist({["at+jwt"]=1})
+
+            local ok1, err = pcall(function () jwt:sign(
+                "lua-resty-jwt",
+                { header={typ="JWT", alg="HS256"}, payload={foo="bar"} }
+            ) end)
+            ngx.say(err.reason)
+
+            local jwt_token = jwt:sign(
+                "lua-resty-jwt",
+                { header={typ="at+jwt", alg="HS256"}, payload={foo="bar"} }
+            )
+            local jwt_obj = jwt:verify("lua-resty-jwt", jwt_token)
+            ngx.say(jwt_obj["verified"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+invalid typ: JWT
+true
+--- no_error_log
+[error]
+
+
+
+=== TEST 29: set_typ_whitelist(nil) disables typ validation
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            jwt:set_typ_whitelist(nil)
+
+            local jwt_token = jwt:sign(
+                "lua-resty-jwt",
+                { header={typ="anything-goes", alg="HS256"}, payload={foo="bar"} }
+            )
+            local jwt_obj = jwt:verify("lua-resty-jwt", jwt_token)
+            ngx.say(jwt_obj["verified"])
+            ngx.say(jwt_obj["header"]["typ"])
+        ';
+    }
+--- request
+GET /t
+--- response_body
+true
+anything-goes
+--- no_error_log
+[error]
+
+
+
+=== TEST 30: set_typ_whitelist({}) rejects every typ value
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+            local jwt = require "resty.jwt"
+            jwt:set_typ_whitelist({})
+
+            local ok, err = pcall(function () jwt:sign(
+                "lua-resty-jwt",
+                { header={typ="JWT", alg="HS256"}, payload={foo="bar"} }
+            ) end)
+            ngx.say(err.reason)
+        ';
+    }
+--- request
+GET /t
+--- response_body
+invalid typ: JWT
+--- no_error_log
+[error]

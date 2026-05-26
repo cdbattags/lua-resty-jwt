@@ -748,6 +748,37 @@ end
 _M.alg_whitelist = nil
 
 
+--- Set a whitelist of allowed "typ" header values
+-- E.g., jwt:set_typ_whitelist({JWT=1, ["at+jwt"]=1})
+--
+-- @param typs - A table with keys for the supported typ values.
+--              If the table is non-nil, during sign the "typ"
+--              header (when present) must be a key in the table.
+--              Pass nil to disable typ validation entirely.
+function _M.set_typ_whitelist(self, typs)
+  self.typ_whitelist = typs
+end
+
+-- Default allowlist: JWT (RFC 7519), JWE (RFC 7516), and the RFC-registered
+-- "+jwt" structured-syntax values:
+--   at+jwt                     RFC 9068
+--   dpop+jwt                   RFC 9449
+--   token-introspection+jwt    RFC 9701
+--   client-authentication+jwt  draft-ietf-oauth-rfc7523bis
+--   secevent+jwt               RFC 8417
+--   logout+jwt                 OpenID Connect Back-Channel Logout 1.0
+_M.typ_whitelist = {
+  [str_const.JWT] = 1,
+  [str_const.JWE] = 1,
+  ["at+jwt"] = 1,
+  ["dpop+jwt"] = 1,
+  ["token-introspection+jwt"] = 1,
+  ["client-authentication+jwt"] = 1,
+  ["secevent+jwt"] = 1,
+  ["logout+jwt"] = 1,
+}
+
+
 --- Returns the list of default validations that will be
 --- applied upon the verification of a jwt.
 function _M.get_default_validation_options(self, jwt_obj)
@@ -976,8 +1007,8 @@ function _M.sign(self, secret_key, jwt_obj)
   -- header typ check
   local typ = jwt_obj[str_const.header][str_const.typ]
   -- Optional header typ check [See http://tools.ietf.org/html/draft-ietf-oauth-json-web-token-25#section-5.1]
-  if typ ~= nil then
-    if typ ~= str_const.JWT and typ ~= str_const.JWE then
+  if typ ~= nil and self.typ_whitelist ~= nil then
+    if not self.typ_whitelist[typ] then
       error({reason="invalid typ: " .. typ})
     end
   end
