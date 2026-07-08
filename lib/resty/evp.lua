@@ -281,7 +281,7 @@ local function _new_key(self, opts)
         ffi_gc(key, _C.EC_KEY_free)
     end
 
-    if not key then
+    if key == nil then
         return _err()
     end
 
