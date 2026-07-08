@@ -874,3 +874,28 @@ everything is awesome~ :p
 bar
 --- no_error_log
 [error]
+
+=== TEST 27: RS256 malformed private key returns error not crash
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local ok, ret = pcall(function()
+                return jwt:sign(
+                    "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAgarbage\n-----END RSA PRIVATE KEY-----\n",
+                    { header = { typ = "JWT", alg = "RS256" }, payload = { foo = "bar" } }
+                )
+            end)
+            if ok then
+                ngx.say("FAIL: expected error, got token")
+            else
+                ngx.say("OK: " .. tostring(ret.reason or ret))
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body_like: ^OK: .*
+--- no_error_log
+[error]
