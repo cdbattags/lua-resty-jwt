@@ -874,3 +874,63 @@ everything is awesome~ :p
 bar
 --- no_error_log
 [error]
+
+=== TEST 27: RS256 malformed private key returns error not crash
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local ok, ret = pcall(function()
+                return jwt:sign(
+                    "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAgarbage\n-----END RSA PRIVATE KEY-----\n",
+                    { header = { typ = "JWT", alg = "RS256" }, payload = { foo = "bar" } }
+                )
+            end)
+            if ok then
+                ngx.say("FAIL: expected error, got token")
+            else
+                ngx.say("OK: " .. tostring(ret.reason or ret))
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body_like: ^OK: .*
+--- no_error_log
+[error]
+
+
+=== TEST 28: ES256 JWT verified with RSA public key returns error not crash
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            -- craft a minimal ES256 token (signature bytes do not matter;
+            -- the crash happens before signature verification)
+            local function b64url(s)
+                return ngx.encode_base64(s):gsub('+','-'):gsub('/','_'):gsub('=','')
+            end
+            local token = b64url('{"typ":"JWT","alg":"ES256"}') ..
+                "." .. b64url('{"sub":"test"}') ..
+                "." .. b64url(string.rep("A", 64))
+            local jwt_obj = jwt:verify(get_testcert("pubkey.pem"), token)
+            if jwt_obj.verified then
+                ngx.say("FAIL: should not be verified")
+            else
+                ngx.say("OK: " .. jwt_obj.reason)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body_like: ^OK: .*
+--- no_error_log
+[error]

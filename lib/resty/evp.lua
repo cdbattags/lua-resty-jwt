@@ -281,7 +281,7 @@ local function _new_key(self, opts)
         ffi_gc(key, _C.EC_KEY_free)
     end
 
-    if not key then
+    if key == nil then
         return _err()
     end
 
@@ -553,7 +553,13 @@ function ECVerifier.get_der_sig(self, signature)
     end
     -- inspired from https://bit.ly/2yZxzxJ
     local ec = _C.EVP_PKEY_get0_EC_KEY(self.evp_pkey)
+    if ec == nil then
+        return nil, "key is not an EC key"
+    end
     local ecgroup = _C.EC_KEY_get0_group(ec)
+    if ecgroup == nil then
+        return nil, "EC key has no group"
+    end
 
     local order =  _C.BN_new()
     ffi_gc(order, _C.BN_free)
