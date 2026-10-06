@@ -566,3 +566,76 @@ set true: false 'max_count' is expected to be an integer >= 1000
 reset: true
 --- no_error_log
 [error]
+
+
+
+=== TEST 12: CBC-HS never decrypts a token whose MAC doesn't match
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local cipher = require "resty.openssl.cipher"
+            local jwt = require "resty.jwt"
+            -- count every CBC decryption: resty.jwt calls cipher.new for each one
+            local decrypts = 0
+            local orig_new = cipher.new
+            cipher.new = function(mode, ...)
+                local c, err = orig_new(mode, ...)
+                if c and type(mode) == "string" and mode:find("-cbc", 1, true) then
+                    local orig_decrypt = c.decrypt
+                    c.decrypt = function(...)
+                        decrypts = decrypts + 1
+                        return orig_decrypt(...)
+                    end
+                end
+                return c, err
+            end
+            local function flip_last_byte(token, idx)
+                local parts = {}
+                for p in (token .. "."):gmatch("([^.]*)%.") do
+                    parts[#parts + 1] = p
+                end
+                local raw = jwt:jwt_decode(parts[idx])
+                raw = raw:sub(1, -2) .. string.char(bit.bxor(raw:byte(-1), 1))
+                parts[idx] = jwt:jwt_encode(raw)
+                return table.concat(parts, ".")
+            end
+            for _, c in ipairs({
+                { enc = "A128CBC-HS256", key = string.rep("k", 32) },
+                { enc = "A192CBC-HS384", key = string.rep("k", 48) },
+                { enc = "A256CBC-HS512", key = string.rep("k", 64) },
+            }) do
+                local token = jwt:sign(c.key, {
+                    header = { alg = "dir", enc = c.enc },
+                    payload = { foo = "bar" },
+                })
+                -- tampered tag, ciphertext (bad padding) and IV
+                for _, t in ipairs({ { "tag", 5 }, { "ct", 4 }, { "iv", 3 } }) do
+                    decrypts = 0
+                    local obj = jwt:verify(c.key, flip_last_byte(token, t[2]))
+                    ngx.say(c.enc, " bad ", t[1], ": ", tostring(obj.verified), " decrypts=", decrypts)
+                end
+                decrypts = 0
+                local obj = jwt:verify(c.key, token)
+                ngx.say(c.enc, " valid: ", tostring(obj.verified), " decrypts=", decrypts)
+            end
+            cipher.new = orig_new
+        }
+    }
+--- request
+GET /t
+--- response_body
+A128CBC-HS256 bad tag: false decrypts=0
+A128CBC-HS256 bad ct: false decrypts=0
+A128CBC-HS256 bad iv: false decrypts=0
+A128CBC-HS256 valid: true decrypts=1
+A192CBC-HS384 bad tag: false decrypts=0
+A192CBC-HS384 bad ct: false decrypts=0
+A192CBC-HS384 bad iv: false decrypts=0
+A192CBC-HS384 valid: true decrypts=1
+A256CBC-HS512 bad tag: false decrypts=0
+A256CBC-HS512 bad ct: false decrypts=0
+A256CBC-HS512 bad iv: false decrypts=0
+A256CBC-HS512 valid: true decrypts=1
+--- no_error_log
+[error]
