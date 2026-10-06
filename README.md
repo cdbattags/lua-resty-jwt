@@ -74,7 +74,7 @@ Since 0.4.0, HMACs are computed with lua-resty-openssl. The LuaRocks package sti
 * **Always pin the algorithms you accept.** Use [verify_with](#verify_with) with `algorithms = { ... }`, or [set_alg_whitelist](#set_alg_whitelist) (for JWE, list both the `alg` and the `enc`). The key type binding stops the known key-confusion attacks, but it is a second line of defence, not a replacement for knowing which algorithms you issue.
 * **Never return `jwt_obj.reason` to clients.** It explains why a token failed and can quote parts of it (for example the signature). Log it, and answer with a generic `401`, as the [examples](examples/README.md) do.
 * **Only trust claims when `jwt_obj.verified` is `true`.** `load_jwt` parses without verifying, so its `payload` is attacker controlled.
-* **Key denylists and replay caches on `jti`, not on the raw token string.** Since 0.4.0 every token has a single accepted encoding, but the same claims can still be carried by different valid tokens. ECDSA signatures, for example, can be rewritten into a second valid signature without the key. Use the `jti` option of [verify_with](#verify_with) or [validators.jti_hook](#validatorsjti_hookhook-opt).
+* **Key denylists and replay caches on `jti`, not on the raw token string.** Since 0.4.0 every token has a single accepted encoding, but the same claims can still be carried by different valid tokens. ECDSA signatures, for example, can be rewritten into a second valid signature without the key (the library accepts both forms of an ES* signature, as other JOSE libraries do). Use the `jti` option of [verify_with](#verify_with) or [validators.jti_hook](#validatorsjti_hookhook-opt).
 * **JWE with asymmetric key management does not authenticate the sender.** With `RSA-OAEP*` and `ECDH-ES*`, anyone who has the recipient's public key can create a JWE that decrypts and "verifies". `verified = true` only means the content was not tampered with after encryption. To know who sent a token, sign it (a JWS, or a JWS nested inside the JWE that you verify yourself), or use a symmetric JWE algorithm with a shared secret.
 * **Rotate keys after upgrading if you hit the RSA-OAEP signing error.** Up to 0.3.2, `sign` put the whole key into the error reason when an `RSA-OAEP*` JWE was signed with a key that was neither a certificate nor a public key (for example a private key or an HMAC secret). If that error was ever logged or returned, treat the key as exposed and rotate it.
 
@@ -295,6 +295,8 @@ verify = load_jwt +  verify_jwt_obj
 
 load jwt, check for kid, then verify it with the correct key. A JWE is decrypted while it is loaded, so `load_jwt` needs its `key`; a JWS is only parsed. The result of `load_jwt` is not verified: don't use its `payload` until `verify_jwt_obj` has set `verified` to `true`.
 
+For a JWE, the key given to `load_jwt` is the one that authenticates it: decryption checks the authentication tag, and `verify_jwt_obj` ignores its own `key` argument for a JWE (it only checks that `load_jwt` authenticated the token, then validates the claims).
+
 `load_jwt` parses strictly: a JWS must have exactly 3 dot-separated parts and a JWE exactly 5, and no part may be empty (`invalid jwt string: empty <part>`), with one exception: a JWE's encrypted key, which must be empty for `dir` and `ECDH-ES` and non-empty for every other `alg`. An empty JWS signature is never accepted (`alg: none` is not supported). Tokens whose `crit` header isn't understood are rejected here too, see [set_crit_whitelist](#set_crit_whitelist).
 
 ### sample of jwt_obj ###
@@ -421,7 +423,11 @@ Registered header names and `b64` (RFC 7797 unencoded payloads are not supported
 
 `syntax: jwt:set_trusted_certs_file(filename)`
 
-Set a PEM file containing trusted CA certificates for `x5c`/`x5u` based verification of RS256/ES256 tokens.
+Set a PEM file containing trusted CA certificates for `x5c`/`x5u` based verification of RS*/PS*/ES* tokens.
+
+While a file is set, the `key` passed to `verify` is ignored for these algorithms: the token is verified with the certificate from its own `x5c` (or `x5u`) header, and **any** certificate that chains to **any** CA in the file is accepted, whatever its subject, key usage or purpose. Use a file holding only a private CA that issues token-signing certificates, never a public CA bundle. Only the first `x5c` certificate is used.
+
+With `x5u`, the URL comes from the token, so whoever made the token chooses it. The function set with `jwt:set_x5u_content_retriever(function(x5u, iss, kid) ... end)` receives it as is and must fetch only URLs on its own allowlist (scheme and host), or it becomes a server-side request forgery (SSRF) vector.
 
 The file is read once per worker and the resulting certificate store is cached by path, so edits to the file under the same path are not picked up until nginx reloads. When an object (the module, or one `jwt.new()` instance) replaces the path it set earlier with another one, the store cached for the replaced path is dropped, so setting another path and then the original one again on the same object re-reads the file. A fresh instance has no path of its own, so the per-request pattern `local j = jwt.new(); j:set_trusted_certs_file(path)` drops nothing and keeps using the cached store. On an instance, `nil` removes the instance's own path, and the module's setting applies again.
 
