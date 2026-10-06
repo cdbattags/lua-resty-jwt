@@ -15,6 +15,46 @@ local jwt_zlib = require "resty.jwt-zlib"
 local jwk = require "resty.jwt.jwk"
 local bit = require "bit"
 
+--- A key: a shared secret, a PEM/DER key or certificate, a JWK or JWK Set
+--- (table or JSON string), a resty.openssl pkey/x509, a key object from
+--- load_key, or (HS* only) a function returning the secret for a kid.
+---@alias resty.jwt.key string|table|resty.jwt.jwk.keyset|fun(kid: string): string?
+
+--- Maps claim names (or "__jwt", or "__header" to a table of header names) to
+--- validators; see resty.jwt-validators. A legacy validation options table
+--- ({lifetime_grace_period=, require_exp_claim=, ...}) is accepted too.
+---@alias resty.jwt.claim_spec table<string, resty.jwt.validator|table<string, resty.jwt.validator>>
+
+---@class resty.jwt.obj
+---@field header table decoded header
+---@field payload any the JSON-decoded payload, or the raw string if it is not JSON
+---@field signature string? JWS signature (base64url)
+---@field raw_header string? JWS header as it appeared in the token
+---@field raw_payload string? JWS payload as it appeared in the token
+---@field typ? "JWT"|"JWE"
+---@field valid boolean the token could be parsed
+---@field verified boolean signature/authentication and claims passed
+---@field reason string? why it failed; never return it to clients
+---@field [string] any
+
+---@class resty.jwt.verify_with_options
+---@field algorithms string[]|table<string, any> allowed alg (and, for JWE, enc) values; required
+---@field claim_specs resty.jwt.claim_spec[]? as verify()'s trailing arguments
+---@field issuer (string|string[])? required "iss"
+---@field audience (string|string[])? required "aud" (any of)
+---@field max_age number? required "iat", at most this many seconds old
+---@field required_claims string[]? claims that must be present
+---@field typ (string|string[])? required "typ" header
+---@field jti resty.jwt.jti_hook? required "jti", checked last
+
+---@class resty.jwt.compression_handler
+---@field deflate fun(data: string): string?, string?
+---@field inflate fun(data: string, max_size: integer): string?, string?
+
+---@class resty.jwt
+---@field _VERSION string
+---@field payload_encoder (fun(payload: any): string)?
+---@field payload_decoder (fun(payload: string): any)?
 local _M = { _VERSION = "0.4.0" }
 
 local mt = {
@@ -346,6 +386,7 @@ end
 -- derive_legacy_ecdh_kw_key). When enabled, decryption tries the RFC 7518
 -- derivation first and falls back to the legacy one. Signing always produces
 -- RFC 7518 tokens. Disabled by default.
+---@param enabled boolean
 function _M.set_legacy_ecdh_kw_kdf(self, enabled)
   self.legacy_ecdh_kw_kdf = enabled and true or false
 end
@@ -1376,6 +1417,9 @@ end
 -- json before converting to base64 string
 --@param payloaf
 --@return base64 encoded payloaf
+---@param ori any a string, or a table to JSON-encode
+---@param is_payload boolean? encode a table with the payload encoder
+---@return string? encoded # nil if a table can't be encoded
 function _M.jwt_encode(self, ori, is_payload)
   if type(ori) == str_const.table then
     ori = is_payload and get_payload_encoder(self)(ori) or cjson_encode(ori)
@@ -1390,6 +1434,10 @@ end
 
 
 --@function jwt decode : decode bas64 encoded string
+---@param b64_str string
+---@param json_decode boolean? JSON-decode the result
+---@param is_payload boolean? decode JSON with the payload decoder
+---@return any|nil data
 function _M.jwt_decode(self, b64_str, json_decode, is_payload)
   -- canonical base64url (no padding, URL-safe alphabet) takes the fast path
   local data = decode_base64url and type(b64_str) == str_const.string and decode_base64url(b64_str)
@@ -1417,6 +1465,7 @@ end
 -- cert was signed by one of these
 -- The file is read once per worker and cached; setting a different path
 -- drops the cache, so the next verification re-reads the file.
+---@param filename string? PEM file of trusted CA certificates
 function _M.set_trusted_certs_file(self, filename)
   if filename ~= self.trusted_certs_file then
     evp.clear_trust_store_cache()
@@ -1436,6 +1485,7 @@ _M.trusted_certs_file = nil
 --                     encryption, e.g. "A256GCM") must be in the table; this
 --                     is checked on load, before any key is unwrapped or
 --                     derived. E.g. {["RSA-OAEP-256"]=1, A256GCM=1}
+---@param algorithms table<string, any>? allowed names as keys, nil to clear
 function _M.set_alg_whitelist(self, algorithms)
   self.alg_whitelist = algorithms
 end
@@ -1448,6 +1498,7 @@ _M.alg_whitelist = nil
 -- rejected before PBKDF2 runs. Counts below 1000 are always rejected.
 --
 -- @param max_count - integer >= 1000, or nil to restore the default (10000)
+---@param max_count integer?
 function _M.set_pbes2_max_count(self, max_count)
   if max_count ~= nil and (type(max_count) ~= str_const.number
       or max_count ~= math_floor(max_count) or max_count < PBES2_MIN_COUNT) then
@@ -1496,6 +1547,7 @@ local typ_whitelist_error = "'typs' is expected to be a table of typ values, or 
 --              Pass nil to disable typ validation entirely.
 --              Only sign uses this list; verify never checks typ unless a
 --              claim spec asks for it (see jwt-validators typ_is).
+---@param typs table? typ values as a list or as keys; nil disables the check
 function _M.set_typ_whitelist(self, typs)
   if typs == nil then
     -- false (not nil) so an instance's choice isn't replaced by the module's
@@ -1539,6 +1591,7 @@ local crit_whitelist_error = "'extensions' is expected to be a table of header p
 --                     extensions. Registered header names (alg, enc, kid...)
 --                     can't be listed, nor "b64" (RFC 7797 is unsupported).
 --                     Pass nil to understand none (the default).
+---@param extensions table? extension names as a list or as keys
 function _M.set_crit_whitelist(self, extensions)
   local whitelist = {}
   if extensions ~= nil then
@@ -1571,6 +1624,8 @@ _M.crit_whitelist = nil
 
 --- Returns the list of default validations that will be
 --- applied upon the verification of a jwt.
+---@param jwt_obj resty.jwt.obj
+---@return table options # legacy validation options
 function _M.get_default_validation_options(self, jwt_obj)
   local p = jwt_obj[str_const.payload]
   local p_is_table = type(p) == str_const.table
@@ -1589,6 +1644,7 @@ end
 --                             it be defined in the jwt. Third one will be the value
 --                             of the 'iss' attribute, would it be defined in the jwt.
 --                             This function should return the matching certificate.
+---@param retriever_function fun(x5u: string, iss: string?, kid: string?): string?
 function _M.set_x5u_content_retriever(self, retriever_function)
   if type(retriever_function) ~= str_const.funct then
     error("'retriever_function' is expected to be a function", 0)
@@ -1871,6 +1927,9 @@ end
 --@function sign  : create a jwt/jwe signature from jwt_object
 --@param secret key
 --@param jwt/jwe payload
+---@param secret_key resty.jwt.key
+---@param jwt_obj table {header = {...}, payload = ...}
+---@return string token # raises {reason=...} on failure
 function _M.sign(self, secret_key, jwt_obj)
   -- header typ check
   local typ = jwt_obj[str_const.header][str_const.typ]
@@ -1966,6 +2025,9 @@ end
 --@function load jwt
 --@param jwt string token
 --@param secret
+---@param jwt_str string
+---@param secret resty.jwt.key? the JWE decryption key
+---@return resty.jwt.obj
 function _M.load_jwt(self, jwt_str, secret)
   local success, ret = pcall(parse, self, secret, jwt_str)
   if not success then
@@ -2438,6 +2500,10 @@ end
 --@param jwt_object
 --@param ... claim specs (see jwt-validators.lua) or legacy validation options
 --@return verified jwt payload or jwt object with error code
+---@param secret resty.jwt.key?
+---@param jwt_obj resty.jwt.obj
+---@param ... resty.jwt.claim_spec
+---@return resty.jwt.obj
 function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
   if not jwt_obj.valid then
     return jwt_obj
@@ -2492,6 +2558,10 @@ end
 --@param ... claim specs (see jwt-validators.lua) or legacy validation options
 --@return true, or false and the reason. On failure jwt_obj.verified is set to
 -- false and jwt_obj.reason to the reason
+---@param jwt_obj resty.jwt.obj # a verified object
+---@param ... resty.jwt.claim_spec
+---@return boolean ok
+---@return string? reason
 function _M.validate_claims(self, jwt_obj, ...)
   if type(jwt_obj) ~= str_const.table or jwt_obj[str_const.verified] ~= true then
     return false, "claims can only be validated on a verified token"
@@ -2504,6 +2574,12 @@ function _M.validate_claims(self, jwt_obj, ...)
   return true
 end
 
+--- Verify a JWS/JWE string: load_jwt + verify_jwt_obj. Prefer verify_with,
+-- which pins the accepted algorithms.
+---@param secret resty.jwt.key
+---@param jwt_str string
+---@param ... resty.jwt.claim_spec
+---@return resty.jwt.obj
 function _M.verify(self, secret, jwt_str, ...)
   local jwt_obj = _M.load_jwt(self, jwt_str, secret)
   if not jwt_obj.valid then
@@ -2637,6 +2713,10 @@ end
 -- The claim options add to claim_specs (or, without claim_specs, to the
 -- default "exp"/"nbf" checks of verify()). The jti hook runs after every
 -- other claim check has passed.
+---@param secret resty.jwt.key
+---@param jwt_str string
+---@param options resty.jwt.verify_with_options
+---@return resty.jwt.obj
 function _M.verify_with(self, secret, jwt_str, options)
   if type(options) ~= str_const.table then
     error("verify_with: options must be a table", 0)
@@ -2690,6 +2770,7 @@ function _M.verify_with(self, secret, jwt_str, options)
   return _M.verify_jwt_obj(self, secret, jwt_obj, unpack(specs))
 end
 
+---@param encoder fun(payload: any): string
 function _M.set_payload_encoder(self, encoder)
   if type(encoder) ~= "function" then
     error({reason="payload encoder must be function"})
@@ -2698,6 +2779,7 @@ function _M.set_payload_encoder(self, encoder)
 end
 
 
+---@param decoder fun(payload: string): any
 function _M.set_payload_decoder(self, decoder)
   if type(decoder) ~= "function" then
     error({reason="payload decoder must be function"})
@@ -2716,6 +2798,8 @@ end
 -- (jwt:register_compression_alg) it is inherited by instances from jwt:new()
 -- that have not registered their own; on an instance it applies to that
 -- instance only. Built-in handlers are never modified.
+---@param name string
+---@param handler resty.jwt.compression_handler
 function _M.register_compression_alg(self, name, handler)
   if type(name) ~= "string" or name == "" then
     error({reason="compression alg name must be a non-empty string"})
@@ -2751,6 +2835,7 @@ local LUA_ZLIB_FEED_CHUNK = 256
 --              through the ciphertext length (CRIME / BREACH family): only
 --              sign with zip=DEF when attacker-chosen plaintext cannot be
 --              mixed with secrets.
+---@param zlib table
 function _M.register_zlib_compression(self, zlib)
   if type(zlib) ~= "table"
       or type(zlib.deflate) ~= "function"
@@ -2811,6 +2896,7 @@ end
 -- payloads are rejected with the generic JWE failure reason.
 --
 -- @param max_size - integer >= 1 (bytes), or nil to restore the default
+---@param max_size integer?
 function _M.set_zip_max_size(self, max_size)
   if max_size ~= nil and (type(max_size) ~= str_const.number
       or max_size ~= math_floor(max_size) or max_size < 1) then
@@ -2829,10 +2915,15 @@ _M.zip_max_size = nil
 -- @param key a JWK or JWK Set (table or JSON string), a PEM/DER key or
 --            certificate, a resty.openssl.pkey or a resty.openssl.x509
 -- @return key object, or nil, error
+---@param key string|table
+---@return resty.jwt.jwk.keyset?
+---@return string? err
 function _M.load_key(self, key)
   return jwk.load(key)
 end
 
+--- A new object with its own settings, inheriting the module's.
+---@return resty.jwt
 function _M.new()
     return setmetatable({}, mt)
 end

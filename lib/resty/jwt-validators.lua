@@ -1,3 +1,51 @@
+--- A claim or header validator: return false or raise to reject; true or
+--- nil accepts. jwt_json is only passed to functions that can read it.
+---@alias resty.jwt.validator fun(val: any, claim: string, jwt_json: string?, payload: table?): boolean?
+
+---@alias resty.jwt.date_options {leeway: number?}
+
+---@alias resty.jwt.check_function fun(val: any, check_val: any): boolean
+
+--- Return true to accept the token; false, or nil and a message, rejects it.
+---@alias resty.jwt.jti_hook fun(jti: string, payload: table): boolean?, string?
+
+--- The validators built by define_validator, each also as opt_<name>, which
+--- passes when the claim is absent.
+---@class resty.jwt.validators
+---@field check fun(check_val: any, check_function: resty.jwt.check_function, name: string?, check_type: string?): resty.jwt.validator
+---@field opt_check fun(check_val: any, check_function: resty.jwt.check_function, name: string?, check_type: string?): resty.jwt.validator
+---@field equals fun(check_val: any): resty.jwt.validator
+---@field opt_equals fun(check_val: any): resty.jwt.validator
+---@field matches fun(pattern: string): resty.jwt.validator
+---@field opt_matches fun(pattern: string): resty.jwt.validator
+---@field any_of fun(check_values: table, check_function: resty.jwt.check_function, name: string?, check_type: string?, table_type: string?): resty.jwt.validator
+---@field opt_any_of fun(check_values: table, check_function: resty.jwt.check_function, name: string?, check_type: string?, table_type: string?): resty.jwt.validator
+---@field equals_any_of fun(check_values: table): resty.jwt.validator
+---@field opt_equals_any_of fun(check_values: table): resty.jwt.validator
+---@field matches_any_of fun(patterns: string[]): resty.jwt.validator
+---@field opt_matches_any_of fun(patterns: string[]): resty.jwt.validator
+---@field contains_any_of fun(check_values: string[], name: string?): resty.jwt.validator
+---@field opt_contains_any_of fun(check_values: string[], name: string?): resty.jwt.validator
+---@field greater_than fun(check_val: number): resty.jwt.validator
+---@field opt_greater_than fun(check_val: number): resty.jwt.validator
+---@field greater_than_or_equal fun(check_val: number): resty.jwt.validator
+---@field opt_greater_than_or_equal fun(check_val: number): resty.jwt.validator
+---@field less_than fun(check_val: number): resty.jwt.validator
+---@field opt_less_than fun(check_val: number): resty.jwt.validator
+---@field less_than_or_equal fun(check_val: number): resty.jwt.validator
+---@field opt_less_than_or_equal fun(check_val: number): resty.jwt.validator
+---@field is_not_before fun(options: resty.jwt.date_options?): resty.jwt.validator
+---@field opt_is_not_before fun(options: resty.jwt.date_options?): resty.jwt.validator
+---@field is_not_expired fun(options: resty.jwt.date_options?): resty.jwt.validator
+---@field opt_is_not_expired fun(options: resty.jwt.date_options?): resty.jwt.validator
+---@field is_at fun(options: resty.jwt.date_options?): resty.jwt.validator
+---@field opt_is_at fun(options: resty.jwt.date_options?): resty.jwt.validator
+---@field audience fun(audiences: string|string[]): resty.jwt.validator
+---@field opt_audience fun(audiences: string|string[]): resty.jwt.validator
+---@field issued_at fun(options: {max_age: number?, leeway: number?}?): resty.jwt.validator
+---@field opt_issued_at fun(options: {max_age: number?, leeway: number?}?): resty.jwt.validator
+---@field jti_hook fun(hook: resty.jwt.jti_hook): resty.jwt.validator
+---@field opt_jti_hook fun(hook: resty.jwt.jti_hook): resty.jwt.validator
 local _M = {}
 
 --[[
@@ -53,6 +101,8 @@ end
     False for the validators built by this module and for Lua functions
     declaring fewer than three parameters (and no varargs).
 ]]--
+---@param fx function
+---@return boolean
 function _M.needs_jwt_json(fx)
   if builtin_validators[fx] then
     return false
@@ -66,6 +116,8 @@ end
     copy of the jwt object).  False for require_one_of and required_claims,
     which use the payload argument instead.
 ]]--
+---@param fx function
+---@return boolean
 function _M.needs_jwt_copy(fx)
   return not payload_validators[fx]
 end
@@ -184,6 +236,8 @@ end
     Returns a validator that chains the given functions together, one after
     another - as long as they keep passing their checks.
 ]]--
+---@param ... resty.jwt.validator
+---@return resty.jwt.validator
 function _M.chain(...)
   local chain_functions = {...}
   for _, fx in ipairs(chain_functions) do
@@ -215,6 +269,8 @@ end
     additional check.  This function will be used in the "required_*" shortcut
     functions for simplification.
 ]]--
+---@param chain_function resty.jwt.validator?
+---@return resty.jwt.validator
 function _M.required(chain_function)
   if chain_function ~= nil then
     return _M.chain(_M.required(), chain_function)
@@ -231,6 +287,8 @@ end
     keys exist.  It is expected that this function is used against a full jwt object.
     The claim_keys must be a non-empty table of strings.
 ]]--
+---@param claim_keys string[]
+---@return resty.jwt.validator
 function _M.require_one_of(claim_keys)
   ensure_not_nil(claim_keys, messages.nil_validator, "claim_keys")
   ensure_is_type(claim_keys, "table", messages.wrong_type_validator, "table", "claim_keys")
@@ -382,6 +440,7 @@ end)
     is_at and issued_at when the validator isn't given its own leeway.  The default is to use 0 seconds
 ]]--
 local system_leeway = 0
+---@param leeway number seconds, >= 0
 function _M.set_system_leeway(leeway)
   ensure_is_type(leeway, "number", "leeway must be a non-negative number")
   ensure_is_non_negative(leeway, "leeway must be a non-negative number")
@@ -409,6 +468,7 @@ end
     default is to use ngx.now
 ]]--
 local system_clock = ngx.now
+---@param clock fun(): number
 function _M.set_system_clock(clock)
   ensure_is_type(clock, "function", "clock must be a function")
   -- Check that clock returns the correct value
@@ -615,6 +675,8 @@ end)
     it to the "__jwt" claim, e.g. { __jwt = required_claims({ "sub", "iss" }) }.
     The claim_keys must be a non-empty table of strings.
 ]]--
+---@param claim_keys string[]
+---@return resty.jwt.validator
 function _M.required_claims(claim_keys)
   ensure_not_nil(claim_keys, messages.nil_validator, "claim_keys")
   ensure_is_type(claim_keys, "table", messages.wrong_type_validator, "table", "claim_keys")
@@ -645,6 +707,8 @@ end
     "AT+JWT" and "at+jwt" all normalize to "at+jwt".  Returns nil for a
     non-string value.
 ]]--
+---@param typ any
+---@return string?
 function _M.normalize_typ(typ)
   if type(typ) ~= "string" then
     return nil
@@ -662,6 +726,8 @@ end
       { __header = { typ = validators.typ_is("at+jwt") } }
     The opt_ version passes when the header has no "typ".
 ]]--
+---@param expected string|string[]
+---@return resty.jwt.validator
 function _M.opt_typ_is(expected)
   if type(expected) == "string" then
     expected = { expected }
@@ -682,6 +748,8 @@ function _M.opt_typ_is(expected)
   end)
 end
 
+---@param expected string|string[]
+---@return resty.jwt.validator
 function _M.typ_is(expected)
   return _M.chain(builtin(function(val, claim, jwt_json)
     ensure_not_nil(val, messages.required_header, claim)

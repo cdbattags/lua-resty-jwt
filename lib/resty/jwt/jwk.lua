@@ -12,6 +12,23 @@ local x509 = require "resty.openssl.x509"
 local digest = require "resty.openssl.digest"
 local utils = require "resty.utils"
 
+--- A parsed key, or set of keys, from jwk.load; reusable across calls.
+---@class resty.jwt.jwk.keyset
+---@field keys resty.jwt.jwk.entry[]
+---@field is_set boolean? built from a JWK Set
+
+---@class resty.jwt.jwk.entry
+---@field kty "RSA"|"EC"|"OKP"|"oct"
+---@field crv string?
+---@field kid string?
+---@field use string?
+---@field alg string?
+---@field k string? the raw secret of an oct key
+---@field public private boolean? holds private key material
+---@field pkey table? (internal) the resty.openssl.pkey, once built
+---@field jwk table? (internal) the JWK the pkey is built from
+
+---@class resty.jwt.jwk
 local _M = {}
 
 local type = type
@@ -204,11 +221,15 @@ local function decode_json_key(str)
 end
 
 --@function true if `str` is a JSON encoded JWK or JWK Set
+---@param str any
+---@return boolean
 function _M.is_json_key(str)
   return type(str) == "string" and decode_json_key(str) ~= nil
 end
 
 --@function true if `obj` is a key set made by jwk.load
+---@param obj any
+---@return boolean
 function _M.is_key(obj)
   return type(obj) == "table" and getmetatable(obj) == KEYSET_MT
 end
@@ -261,6 +282,9 @@ end
 -- may not need. Used by resty.jwt for raw JWK/JWKS/pkey/x509 secrets.
 --@param input a key set, JWK/JWKS table or JSON string, pkey or x509 object
 --@return key set; nil if `input` isn't such a key source; nil, err if malformed
+---@param input any
+---@return resty.jwt.jwk.keyset?
+---@return string? err
 function _M.to_keyset(input)
   if _M.is_key(input) then
     return input
@@ -307,6 +331,9 @@ end
 --              key or certificate string, a resty.openssl.pkey or a
 --              resty.openssl.x509 object
 -- @return key set object, or nil, error
+---@param input any a JWK or JWK Set (table or JSON), a PEM/DER string, a pkey or an x509
+---@return resty.jwt.jwk.keyset?
+---@return string? err
 function _M.load(input)
   if _M.is_key(input) then
     return input
@@ -338,6 +365,9 @@ end
 --@function the resty.openssl.pkey of an asymmetric key set entry (built on
 -- first use and kept on the entry)
 --@return pkey or nil, error
+---@param entry resty.jwt.jwk.entry
+---@return table? pkey # resty.openssl.pkey
+---@return string? err
 function _M.get_pkey(entry)
   if entry.pkey then
     return entry.pkey
@@ -480,6 +510,12 @@ end
 -- @param kid the token header kid (or nil)
 -- @param purpose "verify", "sign" or "decrypt"
 -- @return entry or nil, failure reason
+---@param keyset resty.jwt.jwk.keyset
+---@param alg string
+---@param kid string?
+---@param purpose "verify"|"sign"|"decrypt"
+---@return resty.jwt.jwk.entry?
+---@return string? reason
 function _M.select(keyset, alg, kid, purpose)
   local req = alg_requirements[alg]
   if not req then
@@ -542,6 +578,10 @@ local thumbprint_members = {
 -- @param jwk JWK as a Lua table or JSON string
 -- @param hash digest name, default "SHA256"
 -- @return base64url encoded thumbprint, or nil, error
+---@param jwk string|table
+---@param hash string? digest name, default "SHA256"
+---@return string? thumbprint
+---@return string? err
 function _M.thumbprint(jwk, hash)
   if type(jwk) == "string" then
     jwk = cjson_decode(jwk)

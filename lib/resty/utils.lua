@@ -22,7 +22,6 @@ local decode_base64url = has_ngx_base64 and ngx_base64.decode_base64url or nil
 
 --- base64url encode without padding (RFC 7515 Section 2)
 ---@param s string
----@return string
 function _M.base64url_encode(s)
     if encode_base64url then
         return (encode_base64url(s))
