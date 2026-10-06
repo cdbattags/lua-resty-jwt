@@ -35,6 +35,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [load and verify](#load--verify)
     * [set_alg_whitelist](#set_alg_whitelist)
     * [set_typ_whitelist](#set_typ_whitelist)
+    * [set_crit_whitelist](#set_crit_whitelist)
     * [set_trusted_certs_file](#set_trusted_certs_file)
     * [set_pbes2_max_count](#set_pbes2_max_count)
     * [sign JWE](#sign-jwe)
@@ -184,6 +185,8 @@ verify = load_jwt +  verify_jwt_obj
 
 load jwt, check for kid, then verify it with the correct key
 
+`load_jwt` parses strictly: a JWS must have exactly 3 dot-separated parts and a JWE exactly 5, and no part may be empty (`invalid jwt string: empty <part>`), with one exception: a JWE's encrypted key, which must be empty for `dir` and `ECDH-ES` and non-empty for every other `alg`. An empty JWS signature is never accepted (`alg: none` is not supported). Tokens whose `crit` header isn't understood are rejected here too, see [set_crit_whitelist](#set_crit_whitelist).
+
 ### sample of jwt_obj ###
 
 ```
@@ -231,7 +234,9 @@ Pass `nil` to clear the whitelist and allow all algorithms again.
 
 `syntax: jwt:set_typ_whitelist(typs)`
 
-`sign` validates the `typ` header value you supply against this whitelist *before* performing any signing or encryption. If the value isn't whitelisted, `sign` raises `invalid typ: <value>` and produces no token. Pass a table whose keys are the allowed typ values. Tokens that don't set a `typ` header are unaffected.
+`sign` validates the `typ` header value you supply against this whitelist *before* performing any signing or encryption. If the value isn't whitelisted, `sign` raises `invalid typ: <value>` and produces no token (a non-string `typ` raises `invalid typ: must be a string`). Pass a table whose keys are the allowed typ values, or a list of them. Tokens that don't set a `typ` header are unaffected.
+
+Values are compared case-insensitively, and an `application/` prefix is ignored as RFC 7515 §4.1.9 describes, so `application/at+jwt`, `AT+JWT` and `at+jwt` are the same value. The table is copied, so changing it afterwards has no effect; call `set_typ_whitelist` again instead.
 
 The default whitelist accepts `JWT` (RFC 7519), `JWE` (RFC 7516), and the RFC-registered `+jwt` structured-syntax values:
 
@@ -249,9 +254,40 @@ local jwt = require "resty.jwt"
 jwt:set_typ_whitelist({ JWT = 1, ["my-custom+jwt"] = 1 })
 ```
 
-Pass `nil` to disable typ validation entirely — any value (or no value) is then accepted. Pass `{}` (an empty table) to reject every typ value, including `JWT`/`JWE`.
+Pass `nil` to disable typ validation entirely — any value (or no value) is then accepted. Pass `{}` (an empty table) to reject every typ value, including `JWT`/`JWE`. Like the other settings, calling it on an instance from `jwt.new()` only affects that instance.
 
-Note: this whitelist is consulted only during `sign`. The `verify`/`load` path does not validate `header.typ`. If you need to enforce a specific typ on incoming tokens (e.g. `at+jwt` per RFC 9068), attach a `__jwt` validator that inspects the parsed header — see [Verification](#verification) for details.
+Note: this whitelist is consulted only during `sign`. The `verify`/`load` path does not validate `header.typ`. To enforce a specific typ on incoming tokens (e.g. `at+jwt` per RFC 9068), use the [`validators.typ_is`](#validatorstyp_isexpected-opt) header validator, which compares the same way:
+
+```lua
+local validators = require "resty.jwt-validators"
+local jwt_obj = jwt:verify(key, token, { __header = { typ = validators.typ_is("at+jwt") } })
+```
+
+## set_crit_whitelist
+
+`syntax: jwt:set_crit_whitelist(extensions)`
+
+Tokens may list extension header parameters in `crit` (RFC 7515 §4.1.11, RFC 7516 §4.1.13) that a recipient must understand to accept them. Both JWS and JWE tokens are rejected, before any signature check or decryption, when `crit`:
+
+* is not a non-empty array of distinct strings (`invalid crit header: must be a non-empty array of strings`),
+* lists a registered header parameter such as `alg`, `enc`, `kid` or `typ`,
+* lists a header parameter that isn't in the header, or
+* lists an extension that wasn't declared with `set_crit_whitelist` (`unsupported critical header parameter: <name>`).
+
+By default no extension is understood, so any token carrying `crit` is rejected. Declare the extensions your application handles, as a list or as table keys; the table is copied. Pass `nil` to understand none again.
+
+```lua
+local jwt = require "resty.jwt"
+local validators = require "resty.jwt-validators"
+
+jwt:set_crit_whitelist({ "my-ext" })
+
+-- the library does not interpret "my-ext": enforce it with a header validator,
+-- which runs only after the signature has been verified
+local jwt_obj = jwt:verify(key, token, { __header = { ["my-ext"] = validators.equals("v1") } })
+```
+
+Registered header names and `b64` (RFC 7797 unencoded payloads are not supported) can't be declared.
 
 ## set_trusted_certs_file
 
@@ -320,6 +356,8 @@ A `validator` function returns either `true` or `false`.  Any `validator` *MAY* 
 
 A special claim named `__jwt` can be used such that if a `validator` function exists for it, then the `validator` will be called with a deep clone of the entire parsed jwt object as the value of `val`.  This is so that you can write verifications for an entire object that may depend on one or more claims.
 
+A special claim named `__header` validates header parameters instead of payload claims. Its value is a table mapping header parameter names to `validator` functions, each called with the header parameter's value as `val` and its name as `claim`, e.g. `{ __header = { typ = validators.typ_is("at+jwt"), kid = validators.required() } }`. Like all validators, they only run after the signature (or a JWE's authentication tag) has been verified.
+
 Multiple `claim_spec` tables can be specified to the `jwt:load` and `jwt:verify_jwt_obj` - and they will be executed in order.  There is no guarantee of the execution order of individual `validators` within a single `claim_spec`.  If a `claim_spec` fails, then any following `claim_specs` will *NOT* be executed.
 
 
@@ -338,7 +376,10 @@ Multiple `claim_spec` tables can be specified to the `jwt:load` and `jwt:verify_
         if val.payload.foo == nil or val.payload.bar == nil then
             error("Need to specify either 'foo' or 'bar'")
         end
-    end
+    end,
+    __header = {
+        kid = function(val) return val == "my-key" end
+    }
 }
 ```
 
@@ -431,6 +472,10 @@ val >= (system_clock() - leeway) and val <= (system_clock() + leeway).
 ```
 The optional `options` table may set `{ leeway = seconds }` for this validator only; otherwise the system leeway is used.
 
+#### `validators.typ_is(expected)` (opt) ####
+
+Returns a validator for the `typ` *header*, to be used in a `__header` table: it checks that `typ` is the `expected` string, or one of a list of strings. Values are compared case-insensitively and with an `application/` prefix ignored (RFC 7515 §4.1.9), the same way as [set_typ_whitelist](#set_typ_whitelist). The required version fails with `'typ' header is required.` when the header has no `typ`. `validators.normalize_typ(typ)` exposes the normalization.
+
 #### `validators.set_system_leeway(leeway)` ####
 
 A function to set the default leeway (in seconds) used for `is_not_before`, `is_not_expired` and `is_at` when they are not given their own `leeway`.  The default is to use `0` seconds.  This is module-wide state for the whole worker.
@@ -446,7 +491,8 @@ local validators = require "resty.jwt-validators"
 local claim_spec = {
     sub = validators.opt_matches("^[a-z]+$),
     iss = validators.equals_any_of({ "first", "second" }),
-    __jwt = validators.require_one_of({ "foo", "bar" })
+    __jwt = validators.require_one_of({ "foo", "bar" }),
+    __header = { typ = validators.typ_is("at+jwt") }
 }
 ```
 
