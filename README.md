@@ -155,10 +155,10 @@ Otherwise verification fails with `key type mismatch: ...`. Even so, prefer pinn
 
 Like `verify`, but takes an options table that pins the algorithms accepted for this call:
 
-* `algorithms` (required): list of allowed `alg` header values, e.g. `{ "RS256", "ES256" }` (the `set_alg_whitelist` style `{ RS256 = 1 }` is accepted too).
+* `algorithms` (required): list of allowed `alg` header values, e.g. `{ "RS256", "ES256" }` (the `set_alg_whitelist` style `{ RS256 = 1 }` is accepted too). As with `set_alg_whitelist`, a JWE's `enc` must be listed as well, e.g. `{ "RSA-OAEP-256", "A256GCM" }`.
 * `claim_specs` (optional): list of `claim_spec` tables, the same as the trailing arguments of `verify`.
 
-The `alg` is checked before the token is parsed, so a JWE using a disallowed key management algorithm is never decrypted. A global [set_alg_whitelist](#set_alg_whitelist) still applies as well. Invalid options raise an error.
+The `alg` (and a JWE's `enc`) is checked before the token is parsed, so a JWE using a disallowed algorithm is never decrypted. A global [set_alg_whitelist](#set_alg_whitelist) still applies as well. Invalid options raise an error.
 
 ```lua
 local jwt_obj = jwt:verify_with(public_key, jwt_token, {

@@ -829,7 +829,7 @@ global whitelist: false whitelist unsupported alg: RS256
 [error]
 
 
-=== TEST 22: verify_with rejects a disallowed JWE alg before decrypting
+=== TEST 22: verify_with rejects a disallowed JWE alg/enc before decrypting
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -837,13 +837,15 @@ global whitelist: false whitelist unsupported alg: RS256
             local jwt = require "resty.jwt"
             local key = "12341234123412341234123412341234"
             local token = jwt:sign(key, {header={alg="dir", enc="A128CBC-HS256"}, payload={sub="alice"}})
-            local obj = jwt:verify_with(key, token, {algorithms={"dir"}})
+            local obj = jwt:verify_with(key, token, {algorithms={"dir", "A128CBC-HS256"}})
             ngx.say(obj.verified, " ", obj.payload.sub)
-            -- a key of the wrong size would fail decryption with "invalid pre-shared key";
-            -- the alg check must short-circuit before that
-            obj = jwt:verify_with("short", token, {algorithms={"RSA-OAEP-256"}})
+            -- a key of the wrong size fails decryption; the alg/enc check must
+            -- short-circuit before any key work
+            obj = jwt:verify_with("short", token, {algorithms={"RSA-OAEP-256", "A128CBC-HS256"}})
             ngx.say(obj.verified, " ", obj.reason)
-            obj = jwt:verify_with("short", token, {algorithms={"dir"}})
+            obj = jwt:verify_with("short", token, {algorithms={"dir", "A256GCM"}})
+            ngx.say(obj.verified, " ", obj.reason)
+            obj = jwt:verify_with("short", token, {algorithms={"dir", "A128CBC-HS256"}})
             ngx.say(obj.verified, " ", obj.reason)
         }
     }
@@ -852,6 +854,7 @@ GET /t
 --- response_body
 true alice
 false whitelist unsupported alg: dir
+false whitelist unsupported enc: A128CBC-HS256
 false invalid pre-shared key
 --- no_error_log
 [error]

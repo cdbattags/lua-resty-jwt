@@ -1815,9 +1815,10 @@ end
 --   claim_specs = { spec1, spec2 },      -- optional: same as verify()'s varargs
 -- })
 --
--- The alg is checked before the token is parsed, so a JWE using a
--- disallowed key management algorithm is never decrypted. Applies in
--- addition to set_alg_whitelist().
+-- For a JWE both the key management "alg" and the content encryption "enc"
+-- must be listed. They are checked before the token is parsed, so a JWE using
+-- a disallowed algorithm is never decrypted. Applies in addition to
+-- set_alg_whitelist().
 function _M.verify_with(self, secret, jwt_str, options)
   if type(options) ~= str_const.table then
     error("verify_with: options must be a table", 0)
@@ -1840,6 +1841,11 @@ function _M.verify_with(self, secret, jwt_str, options)
     end
     if not allowed[alg] then
       return {verified=false, reason="whitelist unsupported alg: " .. tostring(alg)}
+    end
+    -- as with set_alg_whitelist, a JWE's content encryption must be listed too
+    local enc = header[str_const.enc]
+    if enc ~= nil and not allowed[enc] then
+      return {verified=false, reason="whitelist unsupported enc: " .. tostring(enc)}
     end
   end
   -- otherwise load_jwt reports the malformed header
