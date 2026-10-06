@@ -1,7 +1,7 @@
 #!/bin/bash
 set -eo pipefail
 
-IMAGE="cdbattags/openresty-testsuite:latest"
+IMAGE="${IMAGE:-cdbattags/openresty-testsuite:latest}"
 
 docker run \
   -i --rm \

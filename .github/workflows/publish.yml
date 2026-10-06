@@ -1,71 +1,109 @@
 name: Publish to LuaRocks & OPM
 
+# Creating a GitHub release for tag vX.Y.Z publishes X.Y.Z. See RELEASING.md.
 on:
   release:
     types: [created]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  test:
+  version:
     runs-on: ubuntu-latest
-    name: Run tests
+    name: Check tag matches _VERSION
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Check tag matches _VERSION
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          prove -v t/version.t
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: version
+    runs-on: ubuntu-latest
+    name: Run tests
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
+          persist-credentials: false
 
+      # pin the test image by digest so the OPM job uploads with the exact
+      # OpenResty build the tests ran on
       - name: Pull test image
-        run: docker pull cdbattags/openresty-testsuite:latest
-
-      - name: Run tests
+        id: image
         run: |
-          docker run \
-            -i --rm \
-            --entrypoint=/bin/sh \
-            -v "${{ github.workspace }}":/lua-resty-jwt \
-            -w /lua-resty-jwt \
-            cdbattags/openresty-testsuite:latest \
-            -c 'luarocks make lua-resty-jwt-dev-0.rockspec && prove -r t'
+          docker pull cdbattags/openresty-testsuite:latest
+          IMAGE="$(docker inspect --format '{{index .RepoDigests 0}}' cdbattags/openresty-testsuite:latest)"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+      # same entry point as test.yml and local runs
+      - name: Run tests
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: ./ci
 
   luarocks:
-    needs: test
+    needs: [version, test]
     runs-on: ubuntu-latest
     name: LuaRocks upload
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
+          persist-credentials: false
 
-      - uses: leafo/gh-actions-lua@v12
+      - uses: leafo/gh-actions-lua@8c9e175e7a3d77e21f809eefbee34a19b858641b # v12.0.0
         with:
           luaVersion: "5.1.5"
 
-      - uses: leafo/gh-actions-luarocks@v6
+      - uses: leafo/gh-actions-luarocks@35d062def313a7699a0d513e996bcf4352f05389 # v6.1.0
 
       - name: Upload to LuaRocks
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          LUAROCKS_API_KEY: ${{ secrets.LUAROCKS_API_KEY }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           luarocks install lua-cjson
           luarocks install luasec
           luarocks new_version lua-resty-jwt-dev-0.rockspec "${VERSION}-1" \
-            "git+https://github.com/cdbattags/lua-resty-jwt.git"
-          luarocks upload "lua-resty-jwt-${VERSION}-1.rockspec" --api-key=$LUAROCKS_API_KEY
-        env:
-          LUAROCKS_API_KEY: ${{ secrets.LUAROCKS_API_KEY }}
+            "git+https://github.com/cdbattags/lua-resty-jwt.git" --tag="v${VERSION}"
+          cat "lua-resty-jwt-${VERSION}-1.rockspec"
+          luarocks lint "lua-resty-jwt-${VERSION}-1.rockspec"
+          luarocks upload "lua-resty-jwt-${VERSION}-1.rockspec" --api-key="$LUAROCKS_API_KEY"
 
   opm:
-    needs: test
+    needs: [version, test]
     runs-on: ubuntu-latest
     name: OPM upload
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Upload to OPM
         env:
+          IMAGE: ${{ needs.test.outputs.image }}
           OPM_GITHUB_ACCOUNT: ${{ secrets.OPM_GITHUB_ACCOUNT }}
           OPM_GITHUB_TOKEN: ${{ secrets.OPM_GITHUB_TOKEN }}
         run: |
@@ -79,5 +117,6 @@ jobs:
             -v "${{ github.workspace }}":/pkg \
             -v /tmp/.opmrc:/root/.opmrc:ro \
             -w /pkg \
-            openresty/openresty:1.27.1.2-0-bookworm-fat \
-            opm upload
+            --entrypoint=opm \
+            "$IMAGE" \
+            upload
