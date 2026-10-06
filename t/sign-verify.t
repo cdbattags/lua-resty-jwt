@@ -875,7 +875,7 @@ bar
 --- no_error_log
 [error]
 
-=== TEST 27: RS256 malformed private key returns error not crash
+=== TEST 25: RS256 malformed private key returns error not crash
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -901,7 +901,7 @@ GET /t
 [error]
 
 
-=== TEST 28: ES256 JWT verified with RSA public key returns error not crash
+=== TEST 26: ES256 JWT verified with RSA public key returns error not crash
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
