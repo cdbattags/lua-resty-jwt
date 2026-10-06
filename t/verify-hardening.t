@@ -886,3 +886,28 @@ false verify_with: options.claim_specs must be a list of claim specs
 true
 --- no_error_log
 [error]
+
+
+=== TEST 24: evp verifiers still fail cleanly on a mismatched key when called directly
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            -- jwt.lua rejects these pairs before reaching evp; make sure evp's own
+            -- guards (exact wording is evp's business) still hold underneath
+            local evp = require "resty.evp"
+            local rsa = assert(evp.PublicKey:new(read_file("cert-pubkey.pem")))
+            local ec = assert(evp.PublicKey:new(read_file("ec_cert_pubkey.pem")))
+            local ok, err = evp.ECVerifier:new(rsa):verify("msg", string.rep("\1", 64), evp.CONST.SHA256_DIGEST)
+            ngx.say(not ok, " ", type(err))
+            ok, err = evp.RSAVerifier:new(ec):verify("msg", string.rep("\1", 256), evp.CONST.SHA256_DIGEST)
+            ngx.say(not ok, " ", type(err))
+        }
+    }
+--- request
+GET /t
+--- response_body
+true string
+true string
+--- no_error_log
+[error]

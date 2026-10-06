@@ -60,7 +60,7 @@ __DATA__
 GET /t
 --- response_body
 false
-key is not an EC key
+key type mismatch: alg ES256 requires an EC P-256 key
 --- no_error_log
 [error]
 
@@ -81,7 +81,7 @@ key is not an EC key
 GET /t
 --- response_body
 false
-key is not an EC key
+key type mismatch: alg ES384 requires an EC P-384 key
 --- no_error_log
 [error]
 
@@ -102,8 +102,8 @@ key is not an EC key
 --- request
 GET /t
 --- response_body
-false key is not an EC key
-false key is not an EC key
+false key type mismatch: alg ES512 requires an EC P-521 key
+false key type mismatch: alg ES512 requires an EC P-521 key
 --- no_error_log
 [error]
 
@@ -124,7 +124,7 @@ false key is not an EC key
 GET /t
 --- response_body
 false
-key is not an EC key
+key type mismatch: alg ES256 requires an EC P-256 key
 --- no_error_log
 [error]
 
@@ -145,8 +145,8 @@ key is not an EC key
 --- request
 GET /t
 --- response_body
-false key is not an RSA key
-false key is not an RSA key
+false key type mismatch: alg RS256 requires an RSA key
+false key type mismatch: alg RS256 requires an RSA key
 --- no_error_log
 [error]
 
@@ -167,8 +167,8 @@ false key is not an RSA key
 --- request
 GET /t
 --- response_body
-false key is not an RSA key
-false key is not an RSA key
+false key type mismatch: alg PS256 requires an RSA key
+false key type mismatch: alg PS256 requires an RSA key
 --- no_error_log
 [error]
 
