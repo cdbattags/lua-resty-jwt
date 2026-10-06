@@ -11,6 +11,7 @@ local openssl_rand = require "resty.openssl.rand"
 local kdf = require "resty.openssl.kdf"
 local utils = require "resty.utils"
 local jwt_validators = require "resty.jwt-validators"
+local jwt_zlib = require "resty.jwt-zlib"
 local bit = require "bit"
 
 local _M = { _VERSION = "0.3.2" }
@@ -747,14 +748,60 @@ local function crit_error(self, header)
   return nil
 end
 
--- Registry for JWE "zip" header parameter handlers (RFC 7516 §4.1.3).
--- Each handler is a table { deflate = fn(bytes)->bytes,err  inflate = fn(bytes)->bytes,err }.
--- Intentionally empty by default: compression-then-encryption is vulnerable to
--- CRIME/BREACH-style side-channel attacks when an attacker can influence part of
--- the plaintext, so callers must explicitly opt in — either via
--- jwt:register_zlib_compression(require "zlib") (which binds "DEF" to lua-zlib)
--- or by registering their own handler with jwt:register_compression_alg.
-local compression_algs = {}
+-- JWE "zip" header parameter handlers (RFC 7516 4.1.3), keyed by zip value.
+-- Each handler is a table { deflate = fn(bytes)->bytes,err
+--                           inflate = fn(bytes, max_size)->bytes,err }.
+-- These built-ins are never mutated: jwt:register_compression_alg stores a
+-- fresh table on the object it is called on (see get_compression_alg).
+-- "DEF" is built in when the system zlib can be loaded through the FFI; it is
+-- only used to compress when the caller's JWE header asks for zip=DEF.
+local builtin_compression_algs = {}
+if jwt_zlib.available then
+  builtin_compression_algs[str_const.DEF] = {
+    deflate = jwt_zlib.deflate,
+    inflate = jwt_zlib.inflate,
+  }
+end
+
+-- An inflated JWE payload may be at most max(250 KiB, 10x the compressed
+-- size) unless jwt:set_zip_max_size sets an explicit cap (cf. go-jose,
+-- CVE-2024-28180).
+local ZIP_DEFAULT_MAX_SIZE = 250 * 1024
+local ZIP_DEFAULT_MAX_RATIO = 10
+
+local function get_compression_alg(self, zip)
+  local algs = self and self.compression_algs
+  local handler = algs and algs[zip]
+  if handler == nil then
+    handler = builtin_compression_algs[zip]
+  end
+  return handler
+end
+
+--@function look up the handler for a JWE "zip" header value, raising on an
+-- unknown or malformed value
+local function require_compression_alg(self, zip)
+  if type(zip) ~= str_const.string then
+    error({reason="invalid zip in JWE header"})
+  end
+  local handler = get_compression_alg(self, zip)
+  if not handler then
+    error({reason="unsupported zip: " .. zip})
+  end
+  return handler
+end
+
+local function get_zip_max_size(self, compressed_len)
+  local max_size = self and self.zip_max_size
+  if max_size then
+    return max_size
+  end
+  max_size = compressed_len * ZIP_DEFAULT_MAX_RATIO
+  if max_size < ZIP_DEFAULT_MAX_SIZE then
+    max_size = ZIP_DEFAULT_MAX_SIZE
+  end
+  return max_size
+end
 
 --@function parse_jwe
 --@param pre-shared key
@@ -818,8 +865,9 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   end
 
   -- Fail fast on unsupported compression before doing any expensive crypto work.
-  if header.zip and not compression_algs[header.zip] then
-    error({reason="unsupported zip: " .. header.zip})
+  local zip_handler
+  if header.zip ~= nil then
+    zip_handler = require_compression_alg(self, header.zip)
   end
 
   local key, enc_key, _
@@ -956,14 +1004,17 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     jwe_decrypt_error("content decryption failed: " .. (err or ""))
   end
 
-  if header.zip then
-    local handler = compression_algs[header.zip]
-    if not handler then
-      error({reason="unsupported zip: " .. header.zip})
+  -- Only authenticated, decrypted content is ever decompressed. A failure
+  -- here takes the generic JWE failure path so it cannot act as an oracle.
+  if zip_handler then
+    local max_size = get_zip_max_size(self, #payload)
+    local ok, inflated, zerr = pcall(zip_handler.inflate, payload, max_size)
+    if not ok then
+      jwe_decrypt_error("payload decompression raised an error")
     end
-    local inflated, zerr = handler.inflate(payload)
-    if zerr or not inflated then
-      error({reason="failed to decompress payload: " .. (zerr or "unknown error")})
+    if zerr ~= nil or type(inflated) ~= str_const.string or #inflated > max_size then
+      jwe_decrypt_error("payload decompression failed: "
+        .. (type(zerr) == str_const.string and zerr or "invalid result"))
     end
     payload = inflated
   end
@@ -1299,11 +1350,9 @@ local function sign_jwe(self, secret_key, jwt_obj)
   local key, encrypted_key, mac_key, enc_key, _
   local encoded_header = _M:jwt_encode(header)
   local payload_to_encrypt = get_payload_encoder(self)(jwt_obj.payload)
-  if header.zip then
-    local handler = compression_algs[header.zip]
-    if not handler then
-      error({reason="unsupported zip: " .. header.zip})
-    end
+  -- RFC 7516 5.1 step 6: compress the plaintext before encrypting it
+  if header.zip ~= nil then
+    local handler = require_compression_alg(self, header.zip)
     local compressed, zerr = handler.deflate(payload_to_encrypt)
     if zerr or not compressed then
       error({reason="failed to compress payload: " .. (zerr or "unknown error")})
@@ -2209,7 +2258,14 @@ end
 
 --@function register_compression_alg : register a handler for the given JWE "zip" header value
 --@param name : the `zip` header value to bind (e.g. "DEF")
---@param handler : a table { deflate = fn(bytes)->bytes,err  inflate = fn(bytes)->bytes,err }
+--@param handler : a table { deflate = fn(bytes)->bytes,err
+--                           inflate = fn(bytes, max_size)->bytes,err }.
+--                 inflate must not produce more than max_size bytes; results
+--                 longer than that are rejected anyway.
+-- The registration applies to the object it is called on: on the module
+-- (jwt:register_compression_alg) it is inherited by instances from jwt:new()
+-- that have not registered their own; on an instance it applies to that
+-- instance only. Built-in handlers are never modified.
 function _M.register_compression_alg(self, name, handler)
   if type(name) ~= "string" or name == "" then
     error({reason="compression alg name must be a non-empty string"})
@@ -2219,19 +2275,32 @@ function _M.register_compression_alg(self, name, handler)
       or type(handler.inflate) ~= "function" then
     error({reason="compression handler must be a table with deflate and inflate functions"})
   end
-  compression_algs[name] = handler
+  -- copy on write: never mutate a table another object may be reading
+  local algs = {}
+  for k, v in pairs(self.compression_algs or {}) do
+    algs[k] = v
+  end
+  algs[name] = handler
+  self.compression_algs = algs
 end
 
+_M.compression_algs = nil
+
+-- lua-zlib streams are fed this many compressed bytes at a time, which bounds
+-- how far one call can overshoot max_size (DEFLATE expands at most ~1032x).
+local LUA_ZLIB_FEED_CHUNK = 256
 
 --@function register_zlib_compression : bind the JWE "DEF" zip alg to a caller-supplied lua-zlib module
 --@param zlib : a lua-zlib-compatible module (typically the result of `require "zlib"`).
---              Passing it in keeps the dependency caller-owned and makes the call itself the opt-in.
---              JWE compression is disabled by default because compress-then-encrypt leaks
---              information about plaintext through ciphertext length (CRIME / BREACH family);
---              only enable it when attacker-chosen plaintext cannot be mixed with secrets.
---              Note: DEFLATE can expand modest inputs into very large outputs ("decompression
---              bombs"); consumers that accept untrusted JWEs should bound the ciphertext size
---              before calling verify/load to keep the inflate step's memory cost predictable.
+--              Passing it in keeps the dependency caller-owned. "DEF" is
+--              already built in when the system zlib can be loaded through
+--              the FFI; use this to prefer lua-zlib or where the FFI is not
+--              available. Like register_compression_alg it applies to the
+--              object it is called on.
+--              Compress-then-encrypt leaks information about the plaintext
+--              through the ciphertext length (CRIME / BREACH family): only
+--              sign with zip=DEF when attacker-chosen plaintext cannot be
+--              mixed with secrets.
 function _M.register_zlib_compression(self, zlib)
   if type(zlib) ~= "table"
       or type(zlib.deflate) ~= "function"
@@ -2247,16 +2316,60 @@ function _M.register_zlib_compression(self, zlib)
       end
       return compressed
     end,
-    inflate = function(data)
+    -- feed the input in small pieces so the output can be checked against
+    -- max_size as it grows, and use lua-zlib's eof flag and input count to
+    -- reject truncated streams and trailing data
+    inflate = function(data, max_size)
       local stream = zlib.inflate(-15)
-      local ok, decompressed = pcall(stream, data, "finish")
-      if not ok then
-        return nil, tostring(decompressed)
+      local out, n, total = {}, 0, 0
+      local pos, len = 1, #data
+      local eof, bytes_in = false, 0
+      while pos <= len do
+        local piece = string_sub(data, pos, pos + LUA_ZLIB_FEED_CHUNK - 1)
+        pos = pos + #piece
+        local ok, inflated, stream_eof, stream_in = pcall(stream, piece)
+        if not ok then
+          return nil, "invalid compressed stream"
+        end
+        if inflated and #inflated > 0 then
+          total = total + #inflated
+          if total > max_size then
+            return nil, "decompressed size exceeds the maximum"
+          end
+          n = n + 1
+          out[n] = inflated
+        end
+        if stream_eof then
+          eof, bytes_in = true, stream_in
+          break
+        end
       end
-      return decompressed
+      if not eof then
+        return nil, "truncated compressed stream"
+      end
+      if bytes_in ~= len then
+        return nil, "trailing data after compressed stream"
+      end
+      return table_concat(out, "", 1, n)
     end,
   })
 end
+
+
+--- Set the maximum size of a decompressed ("zip":"DEF") JWE payload.
+-- By default the cap is max(250 KiB, 10 times the compressed size). Larger
+-- payloads are rejected with the generic JWE failure reason.
+--
+-- @param max_size - integer >= 1 (bytes), or nil to restore the default
+function _M.set_zip_max_size(self, max_size)
+  if max_size ~= nil and (type(max_size) ~= str_const.number
+      or max_size ~= math_floor(max_size) or max_size < 1) then
+    error("'max_size' is expected to be an integer >= 1", 0)
+  end
+  self.zip_max_size = max_size
+end
+
+_M.zip_max_size = nil
 
 
 function _M.new()
