@@ -33,7 +33,9 @@ local CONST = {
     EVP_PKEY_CTRL_RSA_OAEP_MD = 0x1000 + 9,
 
     EVP_PKEY_RSA_PSS = 912,
-    EVP_PKEY_EC = 408
+    EVP_PKEY_EC = 408,
+    -- ref : https://github.com/openssl/openssl/blob/master/include/openssl/evp.h
+    EVP_MAX_MD_SIZE = 64
 }
 _M.CONST = CONST
 
@@ -802,10 +804,10 @@ end
 function Cert.get_fingerprint(self, digest_name)
     local md = _C.EVP_get_digestbyname(digest_name)
     if md == nil then
-        return _err()
+        return nil, "Unknown message digest"
     end
-    local buf = ffi_new("unsigned char[?]", 32)
-    local len = ffi_new("unsigned int[1]", 32)
+    local buf = ffi_new("unsigned char[?]", CONST.EVP_MAX_MD_SIZE)
+    local len = ffi_new("unsigned int[1]", CONST.EVP_MAX_MD_SIZE)
     if _C.X509_digest(self.x509, md, buf, len) ~= 1 then
         return _err()
     end
