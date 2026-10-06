@@ -2064,7 +2064,8 @@ function _M.load_jwt(self, jwt_str, secret)
     return {
       valid=false,
       verified=false,
-      reason=ret[str_const.reason] or str_const.invalid_jwt
+      -- a raw Lua error (from a decoder, a secret function, ...) isn't a table
+      reason=type(ret) == str_const.table and ret[str_const.reason] or str_const.invalid_jwt
     }
   end
 

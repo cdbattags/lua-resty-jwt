@@ -914,3 +914,51 @@ true string
 true string
 --- no_error_log
 [error]
+
+
+
+=== TEST 25: a raw Lua error raised while loading becomes a clean reason
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local token = jwt:sign("secret", { header = { typ = "JWT", alg = "HS256" }, payload = { foo = "bar" } })
+            for _, c in ipairs({
+                { "nil", function() error() end },
+                { "number", function() error(42) end },
+                { "boolean", function() error(true) end },
+                { "string", function() error("decoder saw secret-material", 0) end },
+                { "table", function() error({ reason = "custom decoder reason" }) end },
+            }) do
+                local j = jwt:new()
+                j:set_payload_decoder(c[2])
+                local ok, obj = pcall(j.load_jwt, j, token)
+                ngx.say(c[1], " load_jwt: ", ok, " ", tostring(obj.valid), " ", obj.reason)
+                ok, obj = pcall(j.verify, j, "secret", token)
+                ngx.say(c[1], " verify: ", ok, " ", tostring(obj.verified), " ", obj.reason)
+                ok, obj = pcall(j.verify_with, j, "secret", token, { algorithms = { "HS256" } })
+                ngx.say(c[1], " verify_with: ", ok, " ", tostring(obj.verified), " ", obj.reason)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+nil load_jwt: true false invalid jwt string
+nil verify: true false invalid jwt string
+nil verify_with: true false invalid jwt string
+number load_jwt: true false invalid jwt string
+number verify: true false invalid jwt string
+number verify_with: true false invalid jwt string
+boolean load_jwt: true false invalid jwt string
+boolean verify: true false invalid jwt string
+boolean verify_with: true false invalid jwt string
+string load_jwt: true false invalid jwt string
+string verify: true false invalid jwt string
+string verify_with: true false invalid jwt string
+table load_jwt: true false custom decoder reason
+table verify: true false custom decoder reason
+table verify_with: true false custom decoder reason
+--- no_error_log
+[error]
