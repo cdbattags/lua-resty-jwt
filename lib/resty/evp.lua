@@ -789,12 +789,19 @@ end
 --- Retrieve the DER format of the certificate
 -- @returns Binary DER format, error_string
 function Cert.get_der(self)
-    local bufp = ffi_new("unsigned char *[1]")
-    local len = _C.i2d_X509(self.x509, bufp)
-    if len < 0 then
+    -- Query the size first and encode into our own buffer: letting
+    -- i2d_X509 allocate the output would leak it.
+    local len = _C.i2d_X509(self.x509, nil)
+    if len <= 0 then
         return _err()
     end
-    local der = ffi_string(bufp[0], len)
+    local buf = ffi_new("unsigned char[?]", len)
+    local bufp = ffi_new("unsigned char *[1]", buf)
+    len = _C.i2d_X509(self.x509, bufp)
+    if len <= 0 then
+        return _err()
+    end
+    local der = ffi_string(buf, len)
     return der, nil
 end
 
