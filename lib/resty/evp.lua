@@ -30,7 +30,10 @@ local CONST = {
     EVP_PKEY_CTRL_RSA_PADDING = 0x1000 + 1,
 
     EVP_PKEY_OP_TYPE_CRYPT = 768,
-    EVP_PKEY_CTRL_RSA_OAEP_MD = 0x1000 + 9
+    EVP_PKEY_CTRL_RSA_OAEP_MD = 0x1000 + 9,
+
+    EVP_PKEY_RSA_PSS = 912,
+    EVP_PKEY_EC = 408
 }
 _M.CONST = CONST
 
@@ -39,6 +42,7 @@ _M.CONST = CONST
 ffi.cdef[[
 // Error handling
 unsigned long ERR_get_error(void);
+void ERR_clear_error(void);
 const char * ERR_reason_error_string(unsigned long e);
 
 // Basic IO
@@ -233,6 +237,97 @@ local function _err(ret)
     return ret, table.concat(errs, ": ")
 end
 
+-- OpenSSL 3.x renamed EVP_PKEY_base_id to EVP_PKEY_get_base_id and only
+-- keeps the old name as a macro, so resolve whichever symbol exists.
+local _pkey_base_id
+for _, name in ipairs({ "EVP_PKEY_get_base_id", "EVP_PKEY_base_id" }) do
+    pcall(ffi.cdef, "int " .. name .. "(const EVP_PKEY *pkey);")
+    local ok, fn = pcall(function() return _C[name] end)
+    if ok then
+        _pkey_base_id = fn
+        break
+    end
+end
+
+--- Check that an EVP_PKEY is non-NULL and of one of the given base types
+-- @returns true or nil, error_string
+local function _check_pkey_type(pkey, expected, name)
+    if pkey == nil then
+        return nil, "no key loaded"
+    end
+    if not _pkey_base_id then
+        -- Cannot tell, let OpenSSL reject a mismatching key later on
+        return true
+    end
+    local id = _pkey_base_id(pkey)
+    for _, t in ipairs(expected) do
+        if id == t then
+            return true
+        end
+    end
+    return nil, "key is not an " .. name .. " key"
+end
+
+local RSA_KEY_TYPES = { CONST.EVP_PKEY_RSA, CONST.EVP_PKEY_RSA_PSS }
+local EC_KEY_TYPES = { CONST.EVP_PKEY_EC }
+
+--- Get the EC_KEY of an EVP_PKEY, or nil, error_string if it isn't one
+local function _get_ec_key(pkey)
+    local ok, err = _check_pkey_type(pkey, EC_KEY_TYPES, "EC")
+    if not ok then
+        return nil, err
+    end
+    local ec = _C.EVP_PKEY_get0_EC_KEY(pkey)
+    if ec == nil then
+        _C.ERR_clear_error()
+        return nil, "key is not an EC key"
+    end
+    return ec
+end
+
+--- Get the byte size of the order of the curve of an EC_KEY
+local function _ec_order_size(ec)
+    local ecgroup = _C.EC_KEY_get0_group(ec)
+    if ecgroup == nil then
+        return nil, "EC key has no group"
+    end
+
+    local order = _C.BN_new()
+    if order == nil then
+        return _err()
+    end
+    ffi_gc(order, _C.BN_free)
+
+    -- returns 0 if the curve is not found
+    if _C.EC_GROUP_get_order(ecgroup, order, nil) ~= 1 then
+        return _err()
+    end
+
+    -- BN_num_bytes is a #define, so have to use BN_num_bits
+    local order_size_bytes = math.floor((_C.BN_num_bits(order)+7)/8)
+    if order_size_bytes <= 0 then
+        return nil, "EC key has an invalid group order"
+    end
+    return order_size_bytes
+end
+
+--- Create a memory BIO holding the given string
+local function _new_mem_bio(payload, as_binary)
+    local bio = _C.BIO_new(_C.BIO_s_mem())
+    if bio == nil then
+        return _err()
+    end
+    ffi_gc(bio, _C.BIO_vfree)
+    if as_binary then
+        if _C.BIO_write(bio, payload, #payload) < 0 then
+            return _err()
+        end
+    elseif _C.BIO_puts(bio, payload) < 0 then
+        return _err()
+    end
+    return bio
+end
+
 local ctx_new, ctx_free
 local openssl11, e = pcall(function ()
     local ctx = _C.EVP_MD_CTX_new()
@@ -259,10 +354,12 @@ else
 end
 
 local function _new_key(self, opts)
-    local bio = _C.BIO_new(_C.BIO_s_mem())
-    ffi_gc(bio, _C.BIO_vfree)
-    if _C.BIO_puts(bio, opts.pem_private_key) < 0 then
-        return _err()
+    if type(opts.pem_private_key) ~= "string" then
+        return nil, "Must pass a PEM private key"
+    end
+    local bio, err = _new_mem_bio(opts.pem_private_key)
+    if bio == nil then
+        return nil, err
     end
 
     local pass
@@ -274,15 +371,21 @@ local function _new_key(self, opts)
 
     local key = nil
     if self.algo == "RSA" then
-       key = _C.PEM_read_bio_RSAPrivateKey(bio, nil, nil, pass)
-       ffi_gc(key, _C.RSA_free)
+        key = _C.PEM_read_bio_RSAPrivateKey(bio, nil, nil, pass)
+        if key == nil then
+            return _err()
+        end
+        ffi_gc(key, _C.RSA_free)
     elseif self.algo == "ECDSA" then
         key = _C.PEM_read_bio_ECPrivateKey(bio, nil, nil, pass)
+        if key == nil then
+            return _err()
+        end
         ffi_gc(key, _C.EC_KEY_free)
     end
 
     if key == nil then
-        return _err()
+        return nil, "Unsupported key algorithm"
     end
 
     local evp_pkey = _C.EVP_PKEY_new()
@@ -397,12 +500,12 @@ function RSASigner.sign(self, message, digest_name)
 
     local md = _C.EVP_get_digestbyname(digest_name)
     if md == nil then
-        return _err()
+        return nil, "Unknown message digest"
     end
 
     local md_ctx, err = _create_digest_ctx(self, _C.EVP_DigestSignInit, md)
-    if not md_ctx then
-        return _err()
+    if md_ctx == nil then
+        return nil, err
     end
 
     if _C.EVP_DigestUpdate(md_ctx, message, #message) ~= 1 then
@@ -438,32 +541,45 @@ end
 -- @param signature The ASN.1 DER signature
 -- @returns signature, error_string
 function ECSigner.get_raw_sig(self, signature)
-    if not signature then
+    if type(signature) ~= "string" or #signature == 0 then
         return nil, "Must pass a signature to convert"
     end
+
+    -- Ensure we copy the BN in a padded form
+    local ec, err = _get_ec_key(self.evp_pkey)
+    if ec == nil then
+        return nil, err
+    end
+    local order_size_bytes
+    order_size_bytes, err = _ec_order_size(ec)
+    if not order_size_bytes then
+        return nil, err
+    end
+
     local sig_ptr = ffi_new("const unsigned char *[1]")
     local sig_bin = ffi_new("unsigned char [?]", #signature)
     ffi_copy(sig_bin, signature, #signature)
 
     sig_ptr[0] = sig_bin
     local sig = _C.d2i_ECDSA_SIG(nil, sig_ptr, #signature)
+    if sig == nil then
+        _C.ERR_clear_error()
+        return nil, "Invalid DER signature"
+    end
     ffi_gc(sig, _C.ECDSA_SIG_free)
+    if sig_ptr[0] ~= sig_bin + #signature then
+        return nil, "Invalid DER signature: trailing data"
+    end
+    if sig.r == nil or sig.s == nil then
+        return nil, "Invalid DER signature"
+    end
 
     local rbytes = math.floor((_C.BN_num_bits(sig.r)+7)/8)
     local sbytes = math.floor((_C.BN_num_bits(sig.s)+7)/8)
+    if rbytes > order_size_bytes or sbytes > order_size_bytes then
+        return nil, "Invalid DER signature: r or s larger than curve order"
+    end
 
-    -- Ensure we copy the BN in a padded form
-    local ec = _C.EVP_PKEY_get0_EC_KEY(self.evp_pkey)
-    local ecgroup = _C.EC_KEY_get0_group(ec)
-
-    local order =  _C.BN_new()
-    ffi_gc(order, _C.BN_free)
-
-    -- res is an int, if 0, curve not found
-    local res = _C.EC_GROUP_get_order(ecgroup, order, nil)
-
-    -- BN_num_bytes is a #define, so have to use BN_num_bits
-    local order_size_bytes = math.floor((_C.BN_num_bits(order)+7)/8)
     local resbuf_len = order_size_bytes *2
     local resbuf = ffi_new("unsigned char[?]", resbuf_len)
 
@@ -484,7 +600,7 @@ _M.RSAVerifier = RSAVerifier
 -- @param padding optional RSA padding mode (e.g., RSA_PKCS1_PSS_PADDING)
 -- @returns RSAVerifier, error_string
 function RSAVerifier.new(self, key_source, padding)
-    if not key_source then
+    if type(key_source) ~= "table" or key_source.public_key == nil then
         return nil, "You must pass in an key_source for a public key"
     end
     local evp_public_key = key_source.public_key
@@ -498,15 +614,19 @@ end
 -- @param the signature to verify
 -- @param digest_name The digest type that was used to sign
 -- @returns bool, error_string
-function RSAVerifier.verify(self, message, sig, digest_name)
+local function _verify(self, message, sig, digest_name)
+    if type(sig) ~= "string" then
+        return false, "Must pass a signature to verify"
+    end
+
     local md = _C.EVP_get_digestbyname(digest_name)
     if md == nil then
-        return _err(false)
+        return false, "Unknown message digest"
     end
 
     local md_ctx, err = _create_digest_ctx(self, _C.EVP_DigestVerifyInit, md)
-    if not md_ctx then
-        return _err(false)
+    if md_ctx == nil then
+        return false, err
     end
 
     if _C.EVP_DigestUpdate(md_ctx, message, #message) ~= 1 then
@@ -517,8 +637,18 @@ function RSAVerifier.verify(self, message, sig, digest_name)
     if _C.EVP_DigestVerifyFinal(md_ctx, sig_bin, #sig) == 1 then
         return true, nil
     else
+        -- Don't leave decoding errors in the queue for the next caller
+        _C.ERR_clear_error()
         return false, "Verification failed"
     end
+end
+
+function RSAVerifier.verify(self, message, sig, digest_name)
+    local ok, err = _check_pkey_type(self.evp_pkey, RSA_KEY_TYPES, "RSA")
+    if not ok then
+        return false, err
+    end
+    return _verify(self, message, sig, digest_name)
 end
 
 local ECVerifier = {}
@@ -541,34 +671,26 @@ function ECVerifier.verify(self, message, sig, digest_name)
     if not der_sig then
         return nil, err
     end
-    return RSAVerifier.verify(self, message, der_sig, digest_name)
+    return _verify(self, message, der_sig, digest_name)
 end
 
 --- Converts a RAW r,s signature to ASN.1 DER signature (ECDSA)
 -- @param signature The raw signature
 -- @returns signature, error_string
 function ECVerifier.get_der_sig(self, signature)
-    if not signature then
+    if type(signature) ~= "string" then
         return nil, "Must pass a signature to convert"
     end
     -- inspired from https://bit.ly/2yZxzxJ
-    local ec = _C.EVP_PKEY_get0_EC_KEY(self.evp_pkey)
+    local ec, err = _get_ec_key(self.evp_pkey)
     if ec == nil then
-        return nil, "key is not an EC key"
+        return nil, err
     end
-    local ecgroup = _C.EC_KEY_get0_group(ec)
-    if ecgroup == nil then
-        return nil, "EC key has no group"
+    local order_size_bytes
+    order_size_bytes, err = _ec_order_size(ec)
+    if not order_size_bytes then
+        return nil, err
     end
-
-    local order =  _C.BN_new()
-    ffi_gc(order, _C.BN_free)
-
-    -- res is an int, if 0, curve not found
-    local res = _C.EC_GROUP_get_order(ecgroup, order, nil)
-
-    -- BN_num_bytes is a #define, so have to use BN_num_bits
-    local order_size_bytes = math.floor((_C.BN_num_bits(order)+7)/8)
 
     if #signature ~= 2 * order_size_bytes then
         return nil, "signature length != 2 * order length"
@@ -577,6 +699,9 @@ function ECVerifier.get_der_sig(self, signature)
     local sig_bytes = ffi_new("unsigned char [?]", #signature)
     ffi_copy(sig_bytes, signature, #signature)
     local ecdsa = _C.ECDSA_SIG_new()
+    if ecdsa == nil then
+        return _err()
+    end
     ffi_gc(ecdsa, _C.ECDSA_SIG_free)
 
     -- Those do not need to be GCed as they are cleared by the ECDSA_SIG_free()
@@ -585,14 +710,23 @@ function ECVerifier.get_der_sig(self, signature)
 
     ecdsa.r = r
     ecdsa.s = s
+    if r == nil or s == nil then
+        return _err()
+    end
 
     -- Gives us the buffer size to allocate
     local der_len = _C.i2d_ECDSA_SIG(ecdsa, nil)
+    if der_len <= 0 then
+        return _err()
+    end
 
     local der_sig_ptr = ffi_new("unsigned char *[1]")
     local der_sig_bin = ffi_new("unsigned char [?]", der_len)
     der_sig_ptr[0] = der_sig_bin
     der_len = _C.i2d_ECDSA_SIG(ecdsa, der_sig_ptr)
+    if der_len <= 0 then
+        return _err()
+    end
 
     local der_str = ffi_string(der_sig_bin, der_len)
     return der_str, nil
@@ -607,21 +741,18 @@ _M.Cert = Cert
 -- @param payload A PEM or DER format X509 certificate
 -- @returns Cert, error_string
 function Cert.new(self, payload)
-    if not payload then
+    if type(payload) ~= "string" then
         return nil, "Must pass a PEM or binary DER cert"
     end
-    local bio = _C.BIO_new(_C.BIO_s_mem())
-    ffi_gc(bio, _C.BIO_vfree)
+    local is_pem = payload:find('-----BEGIN') ~= nil
+    local bio, err = _new_mem_bio(payload, not is_pem)
+    if bio == nil then
+        return nil, err
+    end
     local x509
-    if payload:find('-----BEGIN') then
-        if _C.BIO_puts(bio, payload) < 0 then
-            return _err()
-        end
+    if is_pem then
         x509 = _C.PEM_read_bio_X509(bio, nil, nil, nil)
     else
-        if _C.BIO_write(bio, payload, #payload) < 0 then
-            return _err()
-        end
         x509 = _C.d2i_X509_bio(bio, nil)
     end
     if x509 == nil then
@@ -629,8 +760,9 @@ function Cert.new(self, payload)
     end
     ffi_gc(x509, _C.X509_free)
     self.x509 = x509
-    local public_key, err = self:get_public_key()
-    if not public_key then
+    local public_key
+    public_key, err = self:get_public_key()
+    if public_key == nil then
         return nil, err
     end
 
@@ -687,6 +819,12 @@ end
 -- @param trusted_cert_file File path to a list of PEM encoded trusted certificates
 -- @return bool, error_string
 function Cert.verify_trust(self, trusted_cert_file)
+    if type(trusted_cert_file) ~= "string" then
+        return false, "Must pass a trusted certs file path"
+    end
+    if self.x509 == nil then
+        return false, "No certificate loaded"
+    end
     local store = _C.X509_STORE_new()
     if store == nil then
         return _err(false)
@@ -697,7 +835,7 @@ function Cert.verify_trust(self, trusted_cert_file)
     end
 
     local ctx = _C.X509_STORE_CTX_new()
-    if store == nil then
+    if ctx == nil then
         return _err(false)
     end
     ffi_gc(ctx, _C.X509_STORE_CTX_free)
@@ -709,6 +847,7 @@ function Cert.verify_trust(self, trusted_cert_file)
         local code = _C.X509_STORE_CTX_get_error(ctx)
         local msg = ffi_string(_C.X509_verify_cert_error_string(code))
         _C.X509_STORE_CTX_cleanup(ctx)
+        _C.ERR_clear_error()
         return false, msg
     end
     _C.X509_STORE_CTX_cleanup(ctx)
@@ -728,21 +867,18 @@ _M.PublicKey = PublicKey
 -- @param payload A PEM or DER format public key file
 -- @return PublicKey, error_string
 function PublicKey.new(self, payload)
-    if not payload then
+    if type(payload) ~= "string" then
         return nil, "Must pass a PEM or binary DER public key"
     end
-    local bio = _C.BIO_new(_C.BIO_s_mem())
-    ffi_gc(bio, _C.BIO_vfree)
+    local is_pem = payload:find('-----BEGIN') ~= nil
+    local bio, err = _new_mem_bio(payload, not is_pem)
+    if bio == nil then
+        return nil, err
+    end
     local pkey
-    if payload:find('-----BEGIN') then
-        if _C.BIO_puts(bio, payload) < 0 then
-            return _err()
-        end
+    if is_pem then
         pkey = _C.PEM_read_bio_PUBKEY(bio, nil, nil, nil)
     else
-        if _C.BIO_write(bio, payload, #payload) < 0 then
-            return _err()
-        end
         pkey = _C.d2i_PUBKEY_bio(bio, nil)
     end
     if pkey == nil then
@@ -762,7 +898,7 @@ _M.RSAEncryptor = RSAEncryptor
 -- @param digest_alg digest algorithm to use
 -- @returns RSAEncryptor, err_string
 function RSAEncryptor.new(self, key_source, padding, digest_alg)
-    if not key_source then
+    if type(key_source) ~= "table" or key_source.public_key == nil then
         return nil, "You must pass in an key_source for a public key"
     end
     local evp_public_key = key_source.public_key
@@ -778,10 +914,14 @@ end
 -- @param payload plain text payload
 -- @returns encrypted payload, error_string
 function RSAEncryptor.encrypt(self, payload)
+    local ok, err = _check_pkey_type(self.evp_pkey, RSA_KEY_TYPES, "RSA")
+    if not ok then
+        return nil, err
+    end
 
     local ctx, err_str = _create_evp_ctx(self, true)
 
-    if not ctx then
+    if ctx == nil then
         return nil, err_str
     end
     local len = ffi_new("size_t [1]")
@@ -826,7 +966,7 @@ function RSADecryptor.decrypt(self, cypher_text)
 
     local ctx, err_code, err_str = _create_evp_ctx(self, false)
 
-    if not ctx then
+    if ctx == nil then
         return nil, err_code, err_str
     end
 
