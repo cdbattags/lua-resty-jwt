@@ -584,7 +584,7 @@ to the old derivation, so tokens issued by 0.3.x can still be read while they ex
 
 # Upgrading to 0.4.0
 
-0.4.0 fixes several vulnerabilities and changes behaviour that applications may rely on. [CHANGELOG.md](CHANGELOG.md) lists every breaking change, and its [Upgrading from 0.3.x](CHANGELOG.md#upgrading-from-03x) section covers the ones you are most likely to hit and how to fix them.
+0.4.0 fixes several vulnerabilities and changes behavior that applications may rely on. [CHANGELOG.md](CHANGELOG.md) lists every breaking change, and its [Upgrading from 0.3.x](CHANGELOG.md#upgrading-from-03x) section covers the ones you are most likely to hit and how to fix them.
 
 [Back to TOC](#table-of-contents)
 
@@ -768,7 +768,7 @@ A function to set the system clock used for the date validators (`is_not_before`
 ```
 local validators = require "resty.jwt-validators"
 local claim_spec = {
-    sub = validators.opt_matches("^[a-z]+$),
+    sub = validators.opt_matches("^[a-z]+$"),
     iss = validators.equals_any_of({ "first", "second" }),
     __jwt = validators.require_one_of({ "foo", "bar" }),
     __header = { typ = validators.typ_is("at+jwt") }

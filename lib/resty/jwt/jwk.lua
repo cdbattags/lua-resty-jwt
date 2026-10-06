@@ -24,6 +24,7 @@ local utils = require "resty.utils"
 ---@field use string?
 ---@field alg string?
 ---@field k string? the raw secret of an oct key
+---@field key_ops table<string, true>? permitted JWK key_ops, as a set
 ---@field public private boolean? holds private key material
 ---@field pkey table? (internal) the resty.openssl.pkey, once built
 ---@field jwk table? (internal) the JWK the pkey is built from

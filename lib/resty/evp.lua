@@ -483,9 +483,8 @@ local function _create_digest_ctx(self, init_fn, md)
     return md_ctx
 end
 
--- Constructors are called as Class:new(...) and used to store their state on
--- (and return) the shared class table, so a second new() replaced the key of
--- every object made before. Each call now returns a fresh instance.
+-- Constructors are called as Class:new(...) and return a fresh instance per
+-- call; never store state on the shared class table.
 local instance_mts = setmetatable({}, { __mode = "k" })
 
 local function _new_instance(class)

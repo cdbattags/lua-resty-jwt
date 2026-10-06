@@ -1503,8 +1503,7 @@ _M.alg_whitelist = nil
 -- header and every iteration costs worker CPU, so tokens above the cap are
 -- rejected before PBKDF2 runs. Counts below 1000 are always rejected.
 --
--- @param max_count - integer >= 1000, or nil to restore the default (10000)
----@param max_count integer?
+---@param max_count integer? >= 1000, or nil to restore the default (10000)
 function _M.set_pbes2_max_count(self, max_count)
   if max_count ~= nil and (type(max_count) ~= str_const.number
       or max_count ~= math_floor(max_count) or max_count < PBES2_MIN_COUNT) then
@@ -1787,9 +1786,9 @@ end
 
 --@function get_secret_str  : returns the HMAC secret: the secret if it is a string, the result of a
 -- function, or the "k" of the oct JWK selected from a JWK, JWK Set or key object
---@param either the string secret, a function that takes a string parameter and returns a string or nil,
--- or a JWK/JWK Set (table or JSON string) or a key object from resty.jwt.jwk
---@param  jwt payload
+--@param secret_or_function the string secret, a function that takes a string parameter and returns
+-- a string or nil, or a JWK/JWK Set (table or JSON string) or a key object from resty.jwt.jwk
+--@param jwt_obj the jwt object (its header selects the key)
 --@param purpose "sign" or "verify"
 --@return the secret as a string
 local function get_secret_str(secret_or_function, jwt_obj, purpose)
@@ -2281,9 +2280,6 @@ local function prepare_claim_specs(self, jwt_obj, ...)
   return claim_specs
 end
 
--- Validates the claims of an authenticated object against prepared claim specs.
--- Must only be called once the signature/authentication tag has been verified,
--- so validators never see (or leak, through failure reasons) forged claims.
 -- Runs one validator, setting the failure reason on jwt_obj.
 -- @param kind "Claim" or "Header", used in generic failure reasons
 -- @return true if the validator passed
@@ -2305,6 +2301,9 @@ local function run_validator(jwt_obj, fx, val, name, jwt_json, kind)
   return true
 end
 
+-- Validates the claims of an authenticated object against prepared claim specs.
+-- Must only be called once the signature/authentication tag has been verified,
+-- so validators never see (or leak, through failure reasons) forged claims.
 local function validate_claims(jwt_obj, claim_specs)
   -- The JSON encoded jwt_obj passed to validators as jwt_json. Encoding it is
   -- costly, so it is built on first use: the validators of resty.jwt-validators
