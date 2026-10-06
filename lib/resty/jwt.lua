@@ -1,7 +1,7 @@
 local cjson = require "cjson.safe"
 
 local evp = require "resty.evp"
-local hmac = require "resty.hmac"
+local openssl_hmac = require "resty.openssl.hmac"
 local resty_random = require "resty.random"
 local cipher = require "resty.openssl.cipher"
 local pkey = require "resty.openssl.pkey"
@@ -655,20 +655,38 @@ local function encrypt_payload(secret_key, message, enc, aad )
   end
 end
 
+--@function compute HMAC(key, message) with lua-resty-openssl
+--@param md digest name, e.g. "sha256"
+--@return raw MAC bytes
+local function hmac_raw(md, key, message)
+  local h, err = openssl_hmac.new(key, md)
+  if not h then
+    error({reason="hmac error: " .. (err or "unknown error")})
+  end
+  local mac, final_err = h:final(message)
+  if not mac then
+    error({reason="hmac error: " .. (final_err or "unknown error")})
+  end
+  return mac
+end
+
+-- A*CBC-HS* enc -> HMAC digest (RFC 7518 5.2)
+local cbc_hs_digests = {
+  [str_const.A128CBC_HS256] = "sha256",
+  [str_const.A192CBC_HS384] = "sha384",
+  [str_const.A256CBC_HS512] = "sha512",
+}
+
 --@function hmac_digest : generate hmac digest based on key for input message
 --@param mac_key
 --@param input message
 --@return hmac digest
 local function hmac_digest(enc, mac_key, message)
-  if enc == str_const.A128CBC_HS256 then
-    return hmac:new(mac_key, hmac.ALGOS.SHA256):final(message)
-  elseif enc == str_const.A192CBC_HS384 then
-    return hmac:new(mac_key, hmac.ALGOS.SHA384):final(message)
-  elseif enc == str_const.A256CBC_HS512 then
-    return hmac:new(mac_key, hmac.ALGOS.SHA512):final(message)
-  else
+  local md = cbc_hs_digests[enc]
+  if not md then
     error({reason="unsupported enc: " .. enc})
   end
+  return hmac_raw(md, mac_key, message)
 end
 
 -- AL: 64-bit big-endian bit length of the AAD (RFC 7518 5.2.2.1)
@@ -1744,9 +1762,9 @@ end
 
 -- HMAC JWS algorithms -> hmac digest and raw signature length in bytes
 local hmac_algs = {
-  [str_const.HS256] = { algo = hmac.ALGOS.SHA256, len = 32 },
-  [str_const.HS384] = { algo = hmac.ALGOS.SHA384, len = 48 },
-  [str_const.HS512] = { algo = hmac.ALGOS.SHA512, len = 64 },
+  [str_const.HS256] = { md = "sha256", len = 32 },
+  [str_const.HS384] = { md = "sha384", len = 48 },
+  [str_const.HS512] = { md = "sha512", len = 64 },
 }
 
 --@function hmac_sign : compute the raw HMAC signature of a JWS signing input
@@ -1765,7 +1783,7 @@ local function hmac_sign(alg, secret, message)
   if rejection then
     error({reason="invalid secret for " .. alg .. ": " .. rejection})
   end
-  return hmac:new(secret, spec.algo):final(message)
+  return hmac_raw(spec.md, secret, message)
 end
 
 -- ECDSA alg -> required curve (OpenSSL NID and JOSE name), RFC 7518 3.4

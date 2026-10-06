@@ -554,3 +554,89 @@ GET /t
 {"alg":"PBES2-HS256+A128KW","enc":"A128CBC-HS256","p2c":4096,"p2s":"…"}
 --- no_error_log
 [error]
+
+
+=== TEST 12: HS256/HS384/HS512 signatures match the vendored resty.hmac byte for byte
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local hmac = require "resty.hmac"
+            local algos = {HS256=hmac.ALGOS.SHA256, HS384=hmac.ALGOS.SHA384, HS512=hmac.ALGOS.SHA512}
+            math.randomseed(42)
+            local function random_bytes(n, printable)
+                local t = {}
+                for i = 1, n do
+                    t[i] = string.char(printable and math.random(65, 122) or math.random(0, 255))
+                end
+                return table.concat(t)
+            end
+            local checked, mismatches = 0, 0
+            for _, alg in ipairs({"HS256", "HS384", "HS512"}) do
+                -- short, block-sized and longer-than-block keys (hashed first),
+                -- and keys with NUL bytes
+                for _, keylen in ipairs({1, 16, 32, 63, 64, 65, 127, 128, 129, 300}) do
+                    local key = "k" .. random_bytes(keylen - 1, keylen % 2 == 0)
+                    local payload = {sub=random_bytes(math.random(0, 200), true)}
+                    local token = jwt:sign(key, {header={typ="JWT", alg=alg}, payload=payload})
+                    local signing_input, sig = token:match("^(.+)%.([^.]+)$")
+                    local want = hmac:new(key, algos[alg]):final(signing_input)
+                    checked = checked + 1
+                    if jwt:jwt_decode(sig) ~= want then mismatches = mismatches + 1 end
+                    if not jwt:verify(key, token).verified then mismatches = mismatches + 1 end
+                end
+            end
+            ngx.say(checked, " signatures, ", mismatches, " mismatches")
+            -- a fixed vector: RFC 7515 appendix A.1 (HS256)
+            local k = jwt:jwt_decode("AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow")
+            local input = "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ"
+            local obj = jwt:verify(k, input .. ".dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+                {exp=function() return true end})
+            ngx.say("RFC 7515 A.1: ", obj.verified)
+        }
+    }
+--- request
+GET /t
+--- response_body
+30 signatures, 0 mismatches
+RFC 7515 A.1: true
+--- no_error_log
+[error]
+
+
+=== TEST 13: A*CBC-HS* authentication tags match the vendored resty.hmac byte for byte
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local hmac = require "resty.hmac"
+            local cases = {
+                {"A128CBC-HS256", 32, hmac.ALGOS.SHA256},
+                {"A192CBC-HS384", 48, hmac.ALGOS.SHA384},
+                {"A256CBC-HS512", 64, hmac.ALGOS.SHA512},
+            }
+            for _, c in ipairs(cases) do
+                local enc, keylen, algo = c[1], c[2], c[3]
+                local key = string.rep("\1\2\3\4", keylen / 4)
+                local token = jwt:sign(key, {header={alg="dir", enc=enc}, payload={sub="alice", pad=string.rep("x", 37)}})
+                local h, ek, iv, ct, tag = token:match("^([^.]*)%.([^.]*)%.([^.]*)%.([^.]*)%.([^.]*)$")
+                -- RFC 7518 5.2.2.1: MAC over AAD || IV || ciphertext || AL with the first half of the key
+                local aad = h
+                local al = string.char(0, 0, 0, 0, 0, 0, math.floor(#aad * 8 / 256), (#aad * 8) % 256)
+                local mac = hmac:new(key:sub(1, keylen / 2), algo):final(
+                    aad .. jwt:jwt_decode(iv) .. jwt:jwt_decode(ct) .. al)
+                local obj = jwt:verify(key, token)
+                ngx.say(enc, ": tag ", jwt:jwt_decode(tag) == mac:sub(1, #mac / 2), ", verified ", obj.verified, " ", obj.payload.sub)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+A128CBC-HS256: tag true, verified true alice
+A192CBC-HS384: tag true, verified true alice
+A256CBC-HS512: tag true, verified true alice
+--- no_error_log
+[error]

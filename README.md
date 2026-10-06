@@ -13,7 +13,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
 [![test](https://github.com/cdbattags/lua-resty-jwt/actions/workflows/test.yml/badge.svg)](https://github.com/cdbattags/lua-resty-jwt/actions/workflows/test.yml)
 
 
-**Attention :exclamation: the hmac lib used here is [lua-resty-hmac](https://github.com/jkeys089/lua-resty-hmac), not the one in luarocks.**
+**Note:** since 0.4.0, HMAC is computed with [lua-resty-openssl](https://github.com/fffonion/lua-resty-openssl). The vendored `resty.hmac` ([lua-resty-hmac](https://github.com/jkeys089/lua-resty-hmac)) is still installed with this rock for code that requires it, but this library no longer uses it, and it will be removed in 1.0.
 
 # Installation
 
@@ -64,7 +64,7 @@ This library is under active development but is considered production ready.
 This library requires an nginx build with OpenSSL,
 the [ngx_lua module](http://wiki.nginx.org/HttpLuaModule),
 the [LuaJIT 2.0](http://luajit.org/luajit.html),
-the [lua-resty-hmac](https://github.com/jkeys089/lua-resty-hmac),
+the [lua-resty-openssl](https://github.com/fffonion/lua-resty-openssl),
 and the [lua-resty-string](https://github.com/openresty/lua-resty-string),
 
 # Synopsis
