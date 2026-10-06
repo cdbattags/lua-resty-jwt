@@ -761,7 +761,7 @@ ZPmM51hCYIL1jn50e30i8KqEL6y6wl06z6P4co0uew5CzD7JlOQlLB+Ryg==
 GET /t
 --- response_body
 false
-signature length != 2 * order length
+key type mismatch: alg ES512 requires an EC P-521 key
 test
 --- no_error_log
 [error]

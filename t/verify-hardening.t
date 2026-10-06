@@ -402,3 +402,154 @@ false Claim 'foo' validation failed
 false true
 --- no_error_log
 [error]
+
+
+=== TEST 12: HS/RS key confusion - HS256 token MACed with the RSA public key is rejected
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local pub = read_file("cert-pubkey.pem")
+            local cert = read_file("cert.pem")
+            local ec_pub = read_file("ec_cert_pubkey.pem")
+            local payload = {sub="admin"}
+
+            -- the attack: alg switched to HS256, MAC keyed with the (public) PEM
+            for _, k in ipairs({{"rsa pub", pub}, {"rsa cert", cert}, {"ec pub", ec_pub}}) do
+                for _, a in ipairs({{"HS256", "SHA256"}, {"HS384", "SHA384"}, {"HS512", "SHA512"}}) do
+                    local token = hs_token(k[2], {typ="JWT", alg=a[1]}, payload, a[2])
+                    local obj = jwt:verify(k[2], token)
+                    ngx.say(k[1], " ", a[1], ": ", obj.verified, " ", obj.reason)
+                end
+            end
+
+            -- secret function handing back a PEM key
+            local token = hs_token(pub, {alg="HS256", kid="k1"}, payload)
+            local obj = jwt:verify(function() return pub end, token)
+            ngx.say("secret fn: ", obj.verified, " ", obj.reason)
+
+            -- still rejected when the whitelist allows both families
+            jwt:set_alg_whitelist({HS256=1, RS256=1})
+            token = hs_token(pub, {typ="JWT", alg="HS256"}, payload)
+            obj = jwt:verify(pub, token)
+            ngx.say("whitelist: ", obj.verified, " ", obj.reason)
+            -- and rejected outright when it only allows RS256
+            jwt:set_alg_whitelist({RS256=1})
+            obj = jwt:verify(pub, token)
+            ngx.say("RS-only whitelist: ", obj.verified, " ", obj.reason)
+
+            -- signing with PEM material as an HMAC secret is refused as well
+            jwt:set_alg_whitelist(nil)
+            local ok, err = pcall(jwt.sign, jwt, pub, {header={typ="JWT", alg="HS256"}, payload=payload})
+            ngx.say("sign: ", ok, " ", err.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+rsa pub HS256: false invalid secret for HS256: PEM key material cannot be used as an HMAC secret
+rsa pub HS384: false invalid secret for HS384: PEM key material cannot be used as an HMAC secret
+rsa pub HS512: false invalid secret for HS512: PEM key material cannot be used as an HMAC secret
+rsa cert HS256: false invalid secret for HS256: PEM key material cannot be used as an HMAC secret
+rsa cert HS384: false invalid secret for HS384: PEM key material cannot be used as an HMAC secret
+rsa cert HS512: false invalid secret for HS512: PEM key material cannot be used as an HMAC secret
+ec pub HS256: false invalid secret for HS256: PEM key material cannot be used as an HMAC secret
+ec pub HS384: false invalid secret for HS384: PEM key material cannot be used as an HMAC secret
+ec pub HS512: false invalid secret for HS512: PEM key material cannot be used as an HMAC secret
+secret fn: false invalid secret for HS256: PEM key material cannot be used as an HMAC secret
+whitelist: false invalid secret for HS256: PEM key material cannot be used as an HMAC secret
+RS-only whitelist: false whitelist unsupported alg: HS256
+sign: false invalid secret for HS256: PEM key material cannot be used as an HMAC secret
+--- no_error_log
+[error]
+
+
+=== TEST 13: every alg/key-type mismatch is rejected before reaching OpenSSL (no crash)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local keys = {
+                {"rsa", read_file("cert-pubkey.pem")},
+                {"rsa-cert", read_file("cert.pem")},
+                {"p256", read_file("ec_cert_pubkey.pem")},
+                {"p256-cert", read_file("ec_cert.pem")},
+                {"p384", read_file("ec_cert_p384_pubkey.pem")},
+                {"p521", read_file("ec_cert_p521_pubkey.pem")},
+                {"ed25519", read_file("ed25519-pubkey.pem")},
+                {"ed448", read_file("ed448-pubkey.pem")},
+            }
+            local fits = {
+                RS256={rsa=1, ["rsa-cert"]=1}, RS384={rsa=1, ["rsa-cert"]=1}, RS512={rsa=1, ["rsa-cert"]=1},
+                PS256={rsa=1, ["rsa-cert"]=1}, PS384={rsa=1, ["rsa-cert"]=1}, PS512={rsa=1, ["rsa-cert"]=1},
+                ES256={p256=1, ["p256-cert"]=1}, ES384={p384=1}, ES512={p521=1},
+                Ed25519={ed25519=1}, Ed448={ed448=1}, EdDSA={ed25519=1, ed448=1},
+            }
+            local algs = {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
+                          "ES256", "ES384", "ES512", "Ed25519", "Ed448", "EdDSA"}
+            -- realistic signature lengths: 64/96/132 bytes for ES, 256 for RS
+            local sig = jwt:jwt_encode(string.rep("\1", 64))
+            local mismatches, fit_ok = 0, 0
+            for _, alg in ipairs(algs) do
+                for _, k in ipairs(keys) do
+                    local obj = jwt:verify(k[2], make_token({typ="JWT", alg=alg}, {foo="bar"}, sig))
+                    local mismatch = obj.reason:find("^key type mismatch: alg " .. alg .. " requires an ") ~= nil
+                    if fits[alg][k[1]] then
+                        -- right key type: fails only on the (bogus) signature
+                        if not obj.verified and not mismatch then fit_ok = fit_ok + 1
+                        else ngx.say("unexpected for ", alg, "/", k[1], ": ", obj.reason) end
+                    else
+                        if not obj.verified and mismatch then mismatches = mismatches + 1
+                        else ngx.say("unexpected for ", alg, "/", k[1], ": ", obj.reason) end
+                    end
+                end
+            end
+            ngx.say("mismatches rejected: ", mismatches, ", matching keys reached signature check: ", fit_ok)
+
+            local obj = jwt:verify(read_file("cert-pubkey.pem"), make_token({alg="ES256"}, {foo="bar"}, sig))
+            ngx.say(obj.reason)
+            obj = jwt:verify(read_file("ec_cert_p384_pubkey.pem"), make_token({alg="ES256"}, {foo="bar"}, sig))
+            ngx.say(obj.reason)
+            obj = jwt:verify(read_file("ec_cert_pubkey.pem"), make_token({alg="RS256"}, {foo="bar"}, sig))
+            ngx.say(obj.reason)
+            obj = jwt:verify(read_file("cert-pubkey.pem"), make_token({alg="EdDSA"}, {foo="bar"}, sig))
+            ngx.say(obj.reason)
+            obj = jwt:verify(read_file("ed448-pubkey.pem"), make_token({alg="Ed25519"}, {foo="bar"}, sig))
+            ngx.say(obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+mismatches rejected: 76, matching keys reached signature check: 20
+key type mismatch: alg ES256 requires an EC P-256 key
+key type mismatch: alg ES256 requires an EC P-256 key
+key type mismatch: alg RS256 requires an RSA key
+key type mismatch: alg EdDSA requires an Ed25519 or Ed448 key
+key type mismatch: alg Ed25519 requires an Ed25519 key
+--- no_error_log
+[error]
+
+
+=== TEST 14: x5c certificate whose key type doesn't match the alg is rejected
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local pem = read_file("cert.pem")
+            local der_b64 = pem:gsub("%-%-%-%-%-[^-]+%-%-%-%-%-", ""):gsub("%s", "")
+            jwt:set_trusted_certs_file("/lua-resty-jwt/testcerts/root.pem")
+            local token = make_token({alg="ES256", x5c={der_b64}}, {foo="bar"}, jwt:jwt_encode(string.rep("\1", 64)))
+            local obj = jwt:verify(nil, token)
+            ngx.say(obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false key type mismatch: alg ES256 requires an EC P-256 key
+--- no_error_log
+[error]

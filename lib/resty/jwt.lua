@@ -5,6 +5,7 @@ local hmac = require "resty.hmac"
 local resty_random = require "resty.random"
 local cipher = require "resty.openssl.cipher"
 local pkey = require "resty.openssl.pkey"
+local x509 = require "resty.openssl.x509"
 local digest = require "resty.openssl.digest"
 local openssl_rand = require "resty.openssl.rand"
 local kdf = require "resty.openssl.kdf"
@@ -1149,7 +1150,78 @@ local function hmac_sign(alg, secret, message)
   if not spec then
     error({reason="unsupported alg: " .. tostring(alg)})
   end
+  -- An asymmetric key is public, so using one as an HMAC secret lets anyone
+  -- forge tokens (RS/HS key confusion, CVE-2015-9235)
+  if secret:find(str_const.pem_begin, 1, true) then
+    error({reason="invalid secret for " .. alg .. ": PEM key material cannot be used as an HMAC secret"})
+  end
   return hmac:new(secret, spec.algo):final(message)
+end
+
+-- ECDSA alg -> required curve (OpenSSL NID and JOSE name), RFC 7518 3.4
+local ecdsa_alg_curves = {
+  [str_const.ES256] = { nid = 415, name = "P-256" },
+  [str_const.ES384] = { nid = 715, name = "P-384" },
+  [str_const.ES512] = { nid = 716, name = "P-521" },
+}
+
+local rsa_algs = {
+  [str_const.RS256] = true, [str_const.RS384] = true, [str_const.RS512] = true,
+  [str_const.PS256] = true, [str_const.PS384] = true, [str_const.PS512] = true,
+}
+
+local eddsa_alg_key_types = {
+  [str_const.Ed25519] = { ED25519 = true },
+  [str_const.Ed448] = { ED448 = true },
+  [str_const.EdDSA] = { ED25519 = true, ED448 = true },
+}
+
+--@function load the public key of a PEM/DER certificate, or a PEM key
+--@return resty.openssl.pkey or nil
+local function load_verify_pkey(key_str)
+  if not key_str:find(str_const.pem_begin, 1, true) or key_str:find("CERTIFICATE", 1, true) then
+    local cert = x509.new(key_str)
+    if cert then
+      return cert:get_pubkey()
+    end
+  end
+  return pkey.new(key_str)
+end
+
+--@function check that a verification key's type matches the JWS alg family,
+-- so a key is never used with an algorithm it wasn't meant for
+--@param alg the (string) alg from the JWS header
+--@param pk resty.openssl.pkey
+--@return nil if the key fits the alg, failure reason otherwise
+local function check_key_type(alg, pk)
+  local ok, key_type = pcall(pk.get_key_type, pk)
+  local sn = ok and type(key_type) == str_const.table and key_type.sn or nil
+  if rsa_algs[alg] then
+    local is_pss = alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512
+    if sn == "rsaEncryption" or (is_pss and sn == "RSASSA-PSS") then
+      return nil
+    end
+    return "key type mismatch: alg " .. alg .. " requires an RSA key"
+  end
+  local curve = ecdsa_alg_curves[alg]
+  if curve then
+    if sn == "id-ecPublicKey" then
+      local params_ok, params = pcall(pk.get_parameters, pk)
+      if params_ok and type(params) == str_const.table and params.group == curve.nid then
+        return nil
+      end
+    end
+    return "key type mismatch: alg " .. alg .. " requires an EC " .. curve.name .. " key"
+  end
+  local eddsa_types = eddsa_alg_key_types[alg]
+  if eddsa_types then
+    if sn and eddsa_types[sn] then
+      return nil
+    end
+    return "key type mismatch: alg " .. alg .. " requires an " ..
+      (alg == str_const.EdDSA and "Ed25519 or Ed448" or alg) .. " key"
+  end
+  return "key type mismatch: unsupported alg " .. alg
 end
 
 --@function verify the HMAC signature of a JWS object
@@ -1532,9 +1604,9 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
   elseif alg == str_const.RS256 or alg == str_const.RS384 or alg == str_const.RS512
       or alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512
       or alg == str_const.ES256 or alg == str_const.ES384 or alg == str_const.ES512 then
-    local cert, err
+    local cert, cert_str, err
     if self.trusted_certs_file ~= nil then
-      local cert_str = extract_certificate(jwt_obj, self.x5u_content_retriever)
+      cert_str = extract_certificate(jwt_obj, self.x5u_content_retriever)
       if not cert_str then
         return jwt_obj
       end
@@ -1565,6 +1637,19 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
       jwt_obj[str_const.reason] = "No trusted certs loaded"
       return jwt_obj
     end
+
+    local key_str = self.trusted_certs_file ~= nil and cert_str or secret
+    local load_ok, pk = pcall(load_verify_pkey, key_str)
+    if not load_ok or not pk then
+      jwt_obj[str_const.reason] = "Unable to determine the verification key type"
+      return jwt_obj
+    end
+    local key_err = check_key_type(alg, pk)
+    if key_err then
+      jwt_obj[str_const.reason] = key_err
+      return jwt_obj
+    end
+
     local verifier
     if alg == str_const.RS256 or alg == str_const.RS384 or alg == str_const.RS512 then
       verifier, err = evp.RSAVerifier:new(cert)
@@ -1607,10 +1692,19 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
   elseif alg == str_const.Ed25519 or alg == str_const.Ed448 or alg == str_const.EdDSA then
     local pk, pk_err
     if type(secret) == str_const.string then
-      pk, pk_err = pkey.new(secret)
+      local load_ok
+      load_ok, pk, pk_err = pcall(load_verify_pkey, secret)
+      if not load_ok then
+        pk, pk_err = nil, "invalid key"
+      end
     end
     if not pk then
       jwt_obj[str_const.reason] = "Failed to load EdDSA public key: " .. (pk_err or "no key provided")
+      return jwt_obj
+    end
+    local key_err = check_key_type(alg, pk)
+    if key_err then
+      jwt_obj[str_const.reason] = key_err
       return jwt_obj
     end
     local raw_header = get_raw_part(str_const.header, jwt_obj)
