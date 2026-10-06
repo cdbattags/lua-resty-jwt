@@ -805,7 +805,7 @@ end
 -- @return jwt table
 local function parse_jwt(self, encoded_header, encoded_payload, signature)
   local header = _M:jwt_decode(encoded_header, true)
-  if not header then
+  if type(header) ~= str_const.table then
     error({reason="invalid header: " .. encoded_header})
   end
 
@@ -1102,7 +1102,7 @@ local function get_secret_str(secret_or_function, jwt_obj)
     -- Only use with hmac algorithms
     local alg = jwt_obj[str_const.header][str_const.alg]
     if alg ~= str_const.HS256 and alg ~= str_const.HS384 and alg ~= str_const.HS512 then
-      error({reason="secret function can only be used with hmac alg: " .. alg})
+      error({reason="secret function can only be used with hmac alg: " .. tostring(alg)})
     end
 
     -- Pull out the kid value from the header
@@ -1110,9 +1110,19 @@ local function get_secret_str(secret_or_function, jwt_obj)
     if kid_val == nil then
       error({reason="secret function specified without kid in header"})
     end
+    if type(kid_val) ~= str_const.string then
+      error({reason="secret function specified with non-string kid in header"})
+    end
 
     -- Call the function
-    return secret_or_function(kid_val) or error({reason="function returned nil for kid: " .. kid_val})
+    local secret_str = secret_or_function(kid_val)
+    if secret_str == nil then
+      error({reason="function returned nil for kid: " .. kid_val})
+    end
+    if type(secret_str) ~= str_const.string then
+      error({reason="function returned a non-string secret for kid: " .. kid_val})
+    end
+    return secret_str
   elseif type(secret_or_function) == str_const.string then
     -- Just return the string
     return secret_or_function
@@ -1170,7 +1180,7 @@ function _M.sign(self, secret_key, jwt_obj)
   -- Optional header typ check [See http://tools.ietf.org/html/draft-ietf-oauth-json-web-token-25#section-5.1]
   if typ ~= nil then
     if typ ~= str_const.JWT and typ ~= str_const.JWE then
-      error({reason="invalid typ: " .. typ})
+      error({reason="invalid typ: " .. tostring(typ)})
     end
   end
 
@@ -1195,7 +1205,7 @@ function _M.sign(self, secret_key, jwt_obj)
       signer, err = evp.RSASigner:new(secret_key)
     end
     if not signer then
-      error({reason="signer error: " .. err})
+      error({reason="signer error: " .. (err or "")})
     end
     if alg == str_const.RS256 or alg == str_const.PS256 then
       signature = signer:sign(message, evp.CONST.SHA256_DIGEST)
@@ -1207,7 +1217,7 @@ function _M.sign(self, secret_key, jwt_obj)
   elseif alg == str_const.ES256 or alg == str_const.ES384 or alg == str_const.ES512 then
     local signer, err = evp.ECSigner:new(secret_key)
     if not signer then
-      error({reason="signer error: " .. err})
+      error({reason="signer error: " .. (err or "")})
     end
     -- OpenSSL will generate a DER encoded signature that needs to be converted
     local der_signature = ""
@@ -1221,7 +1231,7 @@ function _M.sign(self, secret_key, jwt_obj)
     -- Perform DER to RAW signature conversion
     signature, err = signer:get_raw_sig(der_signature)
     if not signature then
-      error({reason="signature error: " .. err})
+      error({reason="signature error: " .. (err or "")})
     end
   elseif alg == str_const.Ed25519 or alg == str_const.Ed448 or alg == str_const.EdDSA then
     local pk, err = pkey.new(secret_key)
@@ -1233,7 +1243,7 @@ function _M.sign(self, secret_key, jwt_obj)
       error({reason="EdDSA sign error: " .. (err or "")})
     end
   else
-    error({reason="unsupported alg: " .. alg})
+    error({reason="unsupported alg: " .. tostring(alg)})
   end
   -- return full jwt string
   return string_format(str_const.regex_join_msg, message , _M:jwt_encode(signature))
@@ -1286,6 +1296,10 @@ end
 --@return decoded certificate
 local function extract_certificate(jwt_obj, x5u_content_retriever)
   local x5c = jwt_obj[str_const.header][str_const.x5c]
+  if x5c ~= nil and (type(x5c) ~= str_const.table or (x5c[1] ~= nil and type(x5c[1]) ~= str_const.string)) then
+    jwt_obj[str_const.reason] = "Malformed x5c header"
+    return nil
+  end
   if x5c ~= nil and x5c[1] ~= nil then
     -- TODO Might want to add support for intermediaries that we
     -- don't have in our trusted chain (items 2... if present)
@@ -1299,6 +1313,10 @@ local function extract_certificate(jwt_obj, x5u_content_retriever)
   end
 
   local x5u = jwt_obj[str_const.header][str_const.x5u]
+  if x5u ~= nil and type(x5u) ~= str_const.string then
+    jwt_obj[str_const.reason] = "Malformed x5u header"
+    return nil
+  end
   if x5u ~= nil then
     -- TODO Ensure the url starts with https://
     -- cf. https://tools.ietf.org/html/rfc7517#section-4.6
@@ -1311,12 +1329,18 @@ local function extract_certificate(jwt_obj, x5u_content_retriever)
     -- TODO Maybe validate the url against an optional list whitelisted url prefixes?
     -- cf. https://news.ycombinator.com/item?id=9302394
 
-    local iss = jwt_obj[str_const.payload][str_const.iss]
+    local payload = jwt_obj[str_const.payload]
+    local iss = type(payload) == str_const.table and payload[str_const.iss] or nil
     local kid = jwt_obj[str_const.header][str_const.kid]
     local success, ret = pcall(x5u_content_retriever, x5u, iss, kid)
 
     if not success then
       jwt_obj[str_const.reason] = "An error occured while invoking the x5u_content_retriever function."
+      return nil
+    end
+
+    if type(ret) ~= str_const.string then
+      jwt_obj[str_const.reason] = "The x5u_content_retriever function did not return a certificate."
       return nil
     end
 
@@ -1449,6 +1473,11 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
     return jwt_obj
   end
 
+  if type(jwt_obj[str_const.header]) ~= str_const.table then
+    jwt_obj[str_const.reason] = "invalid header"
+    return jwt_obj
+  end
+
   -- validate any claims that have been passed in
   if not validate_claims(self, jwt_obj, ...) then
     return jwt_obj
@@ -1463,6 +1492,11 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
 
   if alg == nil then
     jwt_obj[str_const.reason] = "No algorithm supplied"
+    return jwt_obj
+  end
+
+  if type(alg) ~= str_const.string then
+    jwt_obj[str_const.reason] = "invalid alg: must be a string"
     return jwt_obj
   end
 
@@ -1492,17 +1526,19 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
       end
       cert, err = evp.Cert:new(cert_str)
       if not cert then
-        jwt_obj[str_const.reason] = "Unable to extract signing cert from JWT: " .. err
+        jwt_obj[str_const.reason] = "Unable to extract signing cert from JWT: " .. (err or "unknown error")
         return jwt_obj
       end
       -- Try validating against trusted CA's, then a cert passed as secret
-      local trusted = cert:verify_trust(self.trusted_certs_file)
+      local trusted, trust_err = cert:verify_trust(self.trusted_certs_file)
       if not trusted then
-        jwt_obj[str_const.reason] = "Cert used to sign the JWT isn't trusted: " .. err
+        jwt_obj[str_const.reason] = "Cert used to sign the JWT isn't trusted: " .. (trust_err or "unknown error")
         return jwt_obj
       end
     elseif secret ~= nil then
-      if secret:find("CERTIFICATE") then
+      if type(secret) ~= str_const.string then
+        cert = nil
+      elseif secret:find("CERTIFICATE") then
         cert, err = evp.Cert:new(secret)
       elseif secret:find("PUBLIC KEY") then
         cert, err = evp.PublicKey:new(secret)
@@ -1515,17 +1551,17 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
       jwt_obj[str_const.reason] = "No trusted certs loaded"
       return jwt_obj
     end
-    local verifier = ''
+    local verifier
     if alg == str_const.RS256 or alg == str_const.RS384 or alg == str_const.RS512 then
-      verifier = evp.RSAVerifier:new(cert)
+      verifier, err = evp.RSAVerifier:new(cert)
     elseif alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512 then
-      verifier = evp.RSAVerifier:new(cert, evp.CONST.RSA_PKCS1_PSS_PADDING)
+      verifier, err = evp.RSAVerifier:new(cert, evp.CONST.RSA_PKCS1_PSS_PADDING)
     elseif alg == str_const.ES256 or alg == str_const.ES384 or alg == str_const.ES512 then
-      verifier = evp.ECVerifier:new(cert)
+      verifier, err = evp.ECVerifier:new(cert)
     end
     if not verifier then
       -- Internal error case, should not happen...
-      jwt_obj[str_const.reason] = "Failed to build verifier " .. err
+      jwt_obj[str_const.reason] = "Failed to build verifier " .. (err or "")
       return jwt_obj
     end
 
@@ -1552,11 +1588,11 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
       verified, err = verifier:verify(message, sig, evp.CONST.SHA512_DIGEST)
     end
     if not verified then
-      jwt_obj[str_const.reason] = err
+      jwt_obj[str_const.reason] = err or "signature verification failed"
     end
   elseif alg == str_const.Ed25519 or alg == str_const.Ed448 or alg == str_const.EdDSA then
     local pk, pk_err
-    if secret ~= nil then
+    if type(secret) == str_const.string then
       pk, pk_err = pkey.new(secret)
     end
     if not pk then

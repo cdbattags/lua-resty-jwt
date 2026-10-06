@@ -141,3 +141,173 @@ true
 false true
 --- no_error_log
 [error]
+
+
+=== TEST 4: untrusted x5c cert yields a clean reason (no nil concat)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local pem = read_file("cert.pem")
+            local der_b64 = pem:gsub("%-%-%-%-%-[^-]+%-%-%-%-%-", ""):gsub("%s", "")
+            -- trust an unrelated CA so the chain cannot be built
+            jwt:set_trusted_certs_file("/lua-resty-jwt/testcerts/ec_cert.pem")
+            local token = rs256_token({typ="JWT", alg="RS256", x5c={der_b64}}, {foo="bar"})
+            local obj = jwt:verify(nil, token)
+            ngx.say(obj.verified)
+            ngx.say(obj.reason:find("^Cert used to sign the JWT isn't trusted: .+") ~= nil)
+
+            -- and the same token is accepted with the right CA
+            jwt:set_trusted_certs_file("/lua-resty-jwt/testcerts/root.pem")
+            obj = jwt:verify(nil, token)
+            ngx.say(obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false
+true
+true everything is awesome~ :p
+--- no_error_log
+[error]
+
+
+=== TEST 5: non-string alg in header gives a clean reason
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local pub = read_file("cert-pubkey.pem")
+            for _, alg in ipairs({123, {"HS256"}, true, {HS256=1}}) do
+                local token = make_token({typ="JWT", alg=alg}, {foo="bar"})
+                local obj = jwt:verify(pub, token)
+                ngx.say(obj.verified, " ", obj.reason)
+            end
+            jwt:set_alg_whitelist({HS256=1})
+            local obj = jwt:verify("secret", make_token({alg=7}, {foo="bar"}))
+            ngx.say(obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false invalid alg: must be a string
+false invalid alg: must be a string
+false invalid alg: must be a string
+false invalid alg: must be a string
+false invalid alg: must be a string
+--- no_error_log
+[error]
+
+
+=== TEST 6: non-object JSON headers are rejected at load time
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            for _, h in ipairs({"123", "null", "\"HS256\"", "true", "[1,2]"}) do
+                local obj = jwt:verify("secret", make_token(h, {foo="bar"}))
+                ngx.say(obj.verified, " ", obj.reason)
+            end
+            -- a hand-built object with a broken header must not crash verify_jwt_obj
+            local obj = jwt:verify_jwt_obj("secret", {valid=true, header=5, payload={}})
+            ngx.say(obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false invalid header: MTIz
+false invalid header: bnVsbA
+false invalid header: IkhTMjU2Ig
+false invalid header: dHJ1ZQ
+false No algorithm supplied
+nil invalid header
+--- no_error_log
+[error]
+
+
+=== TEST 7: non-string typ/kid/x5c/x5u header fields don't crash verify
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            -- typ is not checked on verify
+            local obj = jwt:verify("secret", hs_token("secret", {typ={1}, alg="HS256"}, {foo="bar"}))
+            ngx.say("typ table: ", obj.verified)
+
+            local function secret_fn(kid) return "secret" end
+            for _, kid in ipairs({5, {"a"}, false}) do
+                obj = jwt:verify(secret_fn, hs_token("secret", {alg="HS256", kid=kid}, {foo="bar"}))
+                ngx.say("kid ", type(kid), ": ", obj.verified, " ", obj.reason)
+            end
+            obj = jwt:verify(function() return {} end, hs_token("secret", {alg="HS256", kid="k"}, {foo="bar"}))
+            ngx.say(obj.verified, " ", obj.reason)
+
+            -- function secret with an RSA alg
+            obj = jwt:verify(secret_fn, make_token({alg="RS256"}, {foo="bar"}))
+            ngx.say(obj.verified, " ", obj.reason)
+            -- table secret with RS/EdDSA algs
+            obj = jwt:verify({}, make_token({alg="RS256"}, {foo="bar"}))
+            ngx.say(obj.verified, " ", obj.reason)
+            obj = jwt:verify({type="ED25519"}, make_token({alg="EdDSA"}, {foo="bar"}))
+            ngx.say(obj.verified, " ", obj.reason)
+
+            jwt:set_trusted_certs_file("/lua-resty-jwt/testcerts/root.pem")
+            for _, x5c in ipairs({5, "abc", {5}, {{}}, true}) do
+                obj = jwt:verify(nil, make_token({alg="RS256", x5c=x5c}, {foo="bar"}))
+                ngx.say("x5c ", type(x5c), ": ", obj.verified, " ", obj.reason)
+            end
+            obj = jwt:verify(nil, make_token({alg="RS256", x5u={1}}, {foo="bar"}))
+            ngx.say("x5u table: ", obj.verified, " ", obj.reason)
+            jwt:set_x5u_content_retriever(function() return nil end)
+            obj = jwt:verify(nil, make_token({alg="RS256", x5u="https://x"}, {foo="bar"}))
+            ngx.say("x5u nil cert: ", obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+typ table: true
+kid number: false secret function specified with non-string kid in header
+kid table: false secret function specified with non-string kid in header
+kid boolean: false secret function specified with non-string kid in header
+false function returned a non-string secret for kid: k
+false Decode secret is not a valid cert/public key
+false Decode secret is not a valid cert/public key
+false Failed to load EdDSA public key: no key provided
+x5c number: false Malformed x5c header
+x5c string: false Malformed x5c header
+x5c table: false Malformed x5c header
+x5c table: false Malformed x5c header
+x5c boolean: false Malformed x5c header
+x5u table: false Malformed x5u header
+x5u nil cert: false The x5u_content_retriever function did not return a certificate.
+--- no_error_log
+[error]
+
+
+=== TEST 8: sign with a non-string typ or alg returns a clean error
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local ok, err = pcall(jwt.sign, jwt, "secret", {header={typ={}, alg="HS256"}, payload={}})
+            ngx.say(ok, " ", err.reason:find("^invalid typ: ") ~= nil)
+            ok, err = pcall(jwt.sign, jwt, "secret", {header={typ="JWT", alg={}}, payload={}})
+            ngx.say(ok, " ", err.reason:find("^unsupported alg: ") ~= nil)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false true
+false true
+--- no_error_log
+[error]
