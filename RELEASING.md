@@ -1,6 +1,6 @@
 # Releasing
 
-Creating a GitHub release for tag `vX.Y.Z` runs
+Publishing a (non-pre-release) GitHub release for tag `vX.Y.Z` runs
 [`publish.yml`](.github/workflows/publish.yml). The workflow checks that the
 tag matches `_VERSION`, runs `./ci`, and then uploads `X.Y.Z-1` to LuaRocks
 and `X.Y.Z` to OPM. Neither upload can be overwritten, so do every step
@@ -11,8 +11,9 @@ below in order.
 1. **Bump `_VERSION`** in `lib/resty/jwt.lua`. It is the only place a version
    lives: OPM reads it, the tag must match it, and `t/version.t` fails if the
    rockspec or `dist.ini` hard-codes one.
-2. **Write the release notes** (`CHANGELOG.md` if the repo has one by then,
-   otherwise the GitHub release body). Cover:
+2. **Write the release notes** in [`CHANGELOG.md`](CHANGELOG.md): replace
+   `UNRELEASED` with the release date and every `GHSA-TBD` with the advisory
+   IDs, and use the version's section as the GitHub release body. Cover:
    - breaking changes
    - dependency floor changes (currently `lua-resty-openssl >= 1.1.0` on
      LuaRocks and `>= 1.2.0` on OPM)
@@ -55,10 +56,16 @@ git push origin vX.Y.Z
 gh release create vX.Y.Z --verify-tag --title vX.Y.Z --notes-file NOTES.md
 ```
 
-- Create it as a **published, non-draft** release. `publish.yml` triggers on
-  `release: created`, and GitHub does not fire that event for drafts.
-- Do not create a pre-release for a version you don't want on LuaRocks and
-  OPM. Pre-releases trigger the workflow too.
+- `publish.yml` triggers on `release: published`. That fires when you create
+  a non-draft release, or when you publish a draft. Saving a draft never
+  publishes anything, so you can prepare the release as a draft and publish
+  it when you are ready.
+- **Pre-releases never publish.** The workflow still starts for a published
+  pre-release, but every job is skipped (`if: !github.event.release.prerelease`).
+  Turning a pre-release into a full release later does *not* fire `published`
+  again, so nothing is uploaded then either. To release that version, delete
+  the GitHub release (keep the tag) and create a new, non-pre-release one for
+  the same tag.
 
 Then watch the Actions run. The job order is `version` → `test` → `luarocks`
 and `opm` in parallel. If `version` or `test` fails, both uploads are skipped.

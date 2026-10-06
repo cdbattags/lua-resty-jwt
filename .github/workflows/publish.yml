@@ -1,9 +1,12 @@
 name: Publish to LuaRocks & OPM
 
-# Creating a GitHub release for tag vX.Y.Z publishes X.Y.Z. See RELEASING.md.
+# Publishing a GitHub release for tag vX.Y.Z publishes X.Y.Z. See RELEASING.md.
+# "published" fires for a new non-draft release and when a draft is
+# published, never for an unpublished draft. Pre-releases fire it too, so
+# every job below is skipped for them: a pre-release never uploads anything.
 on:
   release:
-    types: [created]
+    types: [published]
 
 permissions:
   contents: read
@@ -14,6 +17,7 @@ concurrency:
 
 jobs:
   version:
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     name: Check tag matches _VERSION
     outputs:
@@ -34,6 +38,7 @@ jobs:
 
   test:
     needs: version
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     name: Run tests
     outputs:
@@ -62,6 +67,7 @@ jobs:
 
   luarocks:
     needs: [version, test]
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     name: LuaRocks upload
 
@@ -92,6 +98,7 @@ jobs:
 
   opm:
     needs: [version, test]
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     name: OPM upload
 
