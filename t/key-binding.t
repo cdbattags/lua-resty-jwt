@@ -145,3 +145,56 @@ ES256 with P-256: true
 ES384 with P-384: true
 --- no_error_log
 [error]
+
+
+
+=== TEST 6: EdDSA signing refuses a missing key, a table, a public key and the wrong curve
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function read(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local c = f:read("*a"); f:close(); return c
+            end
+            local function try(label, key, alg)
+                local ok, err = pcall(jwt.sign, jwt, key, { header = { typ = "JWT", alg = alg }, payload = { foo = "bar" } })
+                ngx.say(label, ": ", tostring(ok), " ", ok and "" or tostring(err.reason))
+            end
+            try("Ed25519 nil", nil, "Ed25519")
+            try("EdDSA nil", nil, "EdDSA")
+            try("Ed25519 table", {}, "Ed25519")
+            try("Ed25519 key object", jwt:load_key(read("ed25519-key.pem")), "Ed25519")
+            -- OpenSSL's own error text follows the prefix; only the prefix is ours
+            local ok, err = pcall(jwt.sign, jwt, "", { header = { typ = "JWT", alg = "Ed25519" }, payload = { foo = "bar" } })
+            ngx.say("Ed25519 empty: ", tostring(ok), " ", tostring(err.reason:find("failed to load EdDSA private key: ", 1, true) == 1))
+            try("Ed25519 with Ed448 key", read("ed448-key.pem"), "Ed25519")
+            try("Ed448 with Ed25519 key", read("ed25519-key.pem"), "Ed448")
+            try("Ed25519 with P-256 key", read("ec_cert-key.pem"), "Ed25519")
+            try("Ed25519 with public key", read("ed25519-pubkey.pem"), "Ed25519")
+            -- the matching keys still sign, and the tokens verify
+            for _, c in ipairs({ { "Ed25519", "ed25519" }, { "Ed448", "ed448" }, { "EdDSA", "ed25519" }, { "EdDSA", "ed448" } }) do
+                local token = jwt:sign(read(c[2] .. "-key.pem"), { header = { typ = "JWT", alg = c[1] }, payload = { foo = "bar" } })
+                ngx.say(c[1], " with ", c[2], ": ", tostring(jwt:verify(read(c[2] .. "-pubkey.pem"), token).verified))
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+Ed25519 nil: false failed to load EdDSA private key: expected a PEM or DER string
+EdDSA nil: false failed to load EdDSA private key: expected a PEM or DER string
+Ed25519 table: false failed to load EdDSA private key: expected a PEM or DER string
+Ed25519 key object: false failed to load EdDSA private key: expected a PEM or DER string
+Ed25519 empty: false true
+Ed25519 with Ed448 key: false key type mismatch: alg Ed25519 requires an Ed25519 key
+Ed448 with Ed25519 key: false key type mismatch: alg Ed448 requires an Ed448 key
+Ed25519 with P-256 key: false key type mismatch: alg Ed25519 requires an Ed25519 key
+Ed25519 with public key: false failed to load EdDSA private key: a public key cannot sign
+Ed25519 with ed25519: true
+Ed448 with ed448: true
+EdDSA with ed25519: true
+EdDSA with ed448: true
+--- no_error_log
+[error]

@@ -2013,9 +2013,21 @@ function _M.sign(self, secret_key, jwt_obj)
       error({reason="signature error: " .. (err or "")})
     end
   elseif alg == str_const.Ed25519 or alg == str_const.Ed448 or alg == str_const.EdDSA then
+    -- pkey.new() generates a fresh random key when given nil or a table, so
+    -- anything but a PEM/DER string must be refused before it gets there
+    if type(secret_key) ~= str_const.string then
+      error({reason="failed to load EdDSA private key: expected a PEM or DER string"})
+    end
     local pk, err = pkey.new(secret_key)
     if not pk then
       error({reason="failed to load EdDSA private key: " .. (err or "")})
+    end
+    local key_err = check_key_type(alg, pk)
+    if key_err then
+      error({reason=key_err})
+    end
+    if not pk:is_private() then
+      error({reason="failed to load EdDSA private key: a public key cannot sign"})
     end
     signature, err = pk:sign(message)
     if not signature then
