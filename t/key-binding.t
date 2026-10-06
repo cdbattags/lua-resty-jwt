@@ -198,3 +198,50 @@ EdDSA with ed25519: true
 EdDSA with ed448: true
 --- no_error_log
 [error]
+
+
+
+=== TEST 7: symmetric JWE encryption refuses key material that decryption would refuse
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local pkey = require "resty.openssl.pkey"
+            local function read(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local c = f:read("*a"); f:close(); return c
+            end
+            local pem = read("cert-pubkey.pem")
+            local der = assert(pkey.new(pem)):tostring("public", "DER")
+            local function try(label, key, alg, enc)
+                local ok, err = pcall(jwt.sign, jwt, key, { header = { alg = alg, enc = enc or "A128GCM" }, payload = { foo = "bar" } })
+                ngx.say(label, ": ", tostring(ok), " ", ok and "" or tostring(err.reason))
+            end
+            try("PBES2 PEM", pem, "PBES2-HS256+A128KW")
+            try("PBES2 DER", der, "PBES2-HS256+A128KW")
+            try("PBES2 empty", "", "PBES2-HS256+A128KW")
+            try("PBES2 table", { kty = "oct", k = "cGFzc3dvcmQ" }, "PBES2-HS256+A128KW")
+            try("dir empty", "", "dir", "A128CBC-HS256")
+            try("dir nil", nil, "dir", "A128CBC-HS256")
+            try("A128KW PEM", pem, "A128KW")
+            try("A128GCMKW nil", nil, "A128GCMKW")
+            -- a plain password still round-trips
+            local token = jwt:sign("password", { header = { alg = "PBES2-HS256+A128KW", enc = "A128GCM" }, payload = { foo = "bar" } })
+            ngx.say("PBES2 password: ", tostring(jwt:verify("password", token).verified))
+        }
+    }
+--- request
+GET /t
+--- response_body
+PBES2 PEM: false invalid key for PBES2-HS256+A128KW: PEM key material cannot be used as a symmetric key
+PBES2 DER: false invalid key for PBES2-HS256+A128KW: DER key material cannot be used as a symmetric key
+PBES2 empty: false invalid key for PBES2-HS256+A128KW: empty secret
+PBES2 table: false invalid key for PBES2-HS256+A128KW: expected a string
+dir empty: false invalid key for dir: empty secret
+dir nil: false invalid key for dir: expected a string
+A128KW PEM: false invalid key for A128KW: PEM key material cannot be used as a symmetric key
+A128GCMKW nil: false invalid key for A128GCMKW: expected a string
+PBES2 password: true
+--- no_error_log
+[error]

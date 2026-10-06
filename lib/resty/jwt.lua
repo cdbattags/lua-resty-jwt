@@ -1679,6 +1679,18 @@ local function sign_jwe(self, secret_key, jwt_obj)
   local enc = header.enc
   local alg = header.alg
 
+  -- the same rule as for decryption: asymmetric key material, or an empty
+  -- string, is never a shared secret or a password
+  if symmetric_jwe_algs[alg] then
+    if type(secret_key) ~= str_const.string then
+      error({reason="invalid key for " .. alg .. ": expected a string"})
+    end
+    local rejection = symmetric_secret_rejection(secret_key, "a symmetric key")
+    if rejection then
+      error({reason="invalid key for " .. alg .. ": " .. rejection})
+    end
+  end
+
   -- TODO: implement logic for creating enc key and mac key and then encrypt key
   local key, encrypted_key, mac_key, enc_key, _
   local encoded_header = encode_header_part(header)

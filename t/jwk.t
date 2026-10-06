@@ -555,14 +555,14 @@ false key type mismatch: alg EdDSA requires an Ed25519 or Ed448 key
             local jwt = require "resty.jwt"
             local pkey = require "resty.openssl.pkey"
             -- an app verifying RS256 tokens with a public key must not accept
-            -- a PBES2 JWE "encrypted" with that public key as the password
+            -- a PBES2 JWE "encrypted" with that public key as the password.
+            -- sign refuses to make one (see t/key-binding.t), and the key is
+            -- refused before any key derivation, so any PBES2 token will do.
             local pub = read_file("cert-pubkey.pem")
-            local token = jwt:sign(pub, { header = { alg = "PBES2-HS256+A128KW", enc = "A128GCM" }, payload = { admin = true } })
+            local token = jwt:sign("pw-is-long-enough", { header = { alg = "PBES2-HS256+A128KW", enc = "A128GCM" }, payload = { admin = true } })
             show(jwt:verify(pub, token))
             local der = assert(pkey.new(pub)):tostring("public", "DER")
-            token = jwt:sign(der, { header = { alg = "PBES2-HS256+A128KW", enc = "A128GCM" }, payload = { admin = true } })
             show(jwt:verify(der, token))
-            token = jwt:sign("pw-is-long-enough", { header = { alg = "PBES2-HS256+A128KW", enc = "A128GCM" }, payload = {} })
             show(jwt:verify("", token))
             show(jwt:verify(jwk_of("cert-pubkey.pem"), token))
             show(jwt:verify(assert(pkey.new(pub)), token))

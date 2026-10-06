@@ -82,6 +82,9 @@ JWE:
   `p2s` must be at least 8 octets.
 - AES key wrap algorithms (A*KW, A*GCMKW) require keys of exactly their size (16, 24 or 32
   bytes), when encrypting and decrypting. Before, the key's length picked the AES variant.
+- `dir`, A*KW, A*GCMKW and PBES2 refuse PEM or DER key material and empty secrets as the
+  shared key or password, when encrypting and decrypting. Encrypting also requires the key
+  to be a string.
 - ECDH-ES+A*KW now follows RFC 7518's Concat KDF. Tokens from 0.3.x need the deprecated,
   decrypt-only `jwt:set_legacy_ecdh_kw_kdf(true)`, which will be removed in 1.0. Invalid
   `apu`/`apv` are rejected; `epk` is validated (EC P-256/384/521 only; secp256k1 refused).
