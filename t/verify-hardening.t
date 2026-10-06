@@ -553,3 +553,113 @@ GET /t
 false key type mismatch: alg ES256 requires an EC P-256 key
 --- no_error_log
 [error]
+
+
+=== TEST 15: claims are not evaluated when the signature is bad
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local calls = 0
+            local spy = function(val) calls = calls + 1 return val == "alice" end
+            local good = jwt:sign("secret", {header={typ="JWT", alg="HS256"}, payload={sub="alice", exp=1}})
+            local forged = jwt:sign("wrong", {header={typ="JWT", alg="HS256"}, payload={sub="mallory", exp=1}})
+
+            -- bad signature: claim validators never run, and the signature failure wins
+            local obj = jwt:verify("secret", forged, {sub=spy, exp=validators.is_not_expired()})
+            ngx.say(calls, " ", obj.verified, " ", obj.reason:find("^signature mismatch: ") ~= nil)
+            -- also for the default (exp/nbf) validation: expired AND forged -> signature reason
+            obj = jwt:verify("secret", forged)
+            ngx.say(obj.verified, " ", obj.reason:find("^signature mismatch: ") ~= nil)
+            -- legacy options too
+            obj = jwt:verify("secret", forged, {lifetime_grace_period=0, require_exp_claim=true})
+            ngx.say(obj.verified, " ", obj.reason:find("^signature mismatch: ") ~= nil)
+
+            -- good signature: claims run, and a claim failure is reported
+            obj = jwt:verify("secret", good, {sub=spy})
+            ngx.say(calls, " ", obj.verified, " ", obj.reason)
+            obj = jwt:verify("secret", good, {exp=validators.is_not_expired()}, {sub=spy})
+            ngx.say(calls, " ", obj.verified, " ", obj.reason)
+
+            -- RS256 with the wrong key: same ordering
+            local rs = rs256_token({typ="JWT", alg="RS256"}, {sub="mallory"})
+            obj = jwt:verify(read_file("ec_cert_pubkey.pem"), rs, {sub=spy})
+            ngx.say(calls, " ", obj.verified, " ", obj.reason)
+            obj = jwt:verify(read_file("cert-pubkey.pem"), rs, {sub=spy})
+            ngx.say(calls, " ", obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+0 false true
+false true
+false true
+1 true everything is awesome~ :p
+1 false 'exp' claim expired at Thu, 01 Jan 1970 00:00:01 GMT
+1 false key type mismatch: alg RS256 requires an RSA key
+2 false Claim 'sub' ('mallory') returned failure
+--- no_error_log
+[error]
+
+
+=== TEST 16: malformed claim specs still raise regardless of the signature
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local forged = jwt:sign("wrong", {header={typ="JWT", alg="HS256"}, payload={sub="x"}})
+            local ok, err = pcall(jwt.verify, jwt, "secret", forged, {sub="not a function"})
+            ngx.say(ok, " ", err)
+            ok, err = pcall(jwt.verify, jwt, "secret", forged, "not a table")
+            ngx.say(ok, " ", err)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false Claim spec value must be a function - see jwt-validators.lua for helper functions
+false Claim spec must be a table - see jwt-validators.lua for helper functions
+--- no_error_log
+[error]
+
+
+=== TEST 17: JWE claims are only validated once decryption/authentication succeeded
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local key = "12341234123412341234123412341234"
+            local calls = 0
+            local spy = function(val) calls = calls + 1 return val == "alice" end
+            local token = jwt:sign(key, {header={alg="dir", enc="A128CBC-HS256"}, payload={sub="alice"}})
+
+            local obj = jwt:verify(key, token, {sub=spy})
+            ngx.say(calls, " ", obj.verified, " ", obj.reason)
+
+            -- tamper with the authentication tag: no claim evaluation
+            local parts = {}
+            for p in token:gmatch("[^.]+") do parts[#parts + 1] = p end
+            local tag = jwt:jwt_decode(parts[#parts])
+            parts[#parts] = jwt:jwt_encode(string.char(bit.bxor(tag:byte(1), 1)) .. tag:sub(2))
+            obj = jwt:verify(key, table.concat(parts, "."), {sub=spy})
+            ngx.say(calls, " ", obj.verified)
+
+            -- authenticated, but a claim fails
+            token = jwt:sign(key, {header={alg="dir", enc="A128CBC-HS256"}, payload={sub="bob"}})
+            obj = jwt:verify(key, token, {sub=spy})
+            ngx.say(calls, " ", obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+1 true everything is awesome~ :p
+1 false
+2 false Claim 'sub' ('bob') returned failure
+--- no_error_log
+[error]

@@ -1495,17 +1495,37 @@ local function is_legacy_validation_options(options)
   return is_legacy
 end
 
--- Validates the claims for the given (parsed) object
-local function validate_claims(self, jwt_obj, ...)
+-- Resolves the claim specs passed to verify: applies the default validation
+-- options when none were given, converts legacy option tables and checks
+-- that every spec maps claims to validator functions. Raises on malformed
+-- specs (programming errors) regardless of the token being verified.
+local function prepare_claim_specs(self, jwt_obj, ...)
   local claim_specs = {...}
   if #claim_specs == 0 then
     table.insert(claim_specs, _M:get_default_validation_options(jwt_obj))
   end
 
-  if jwt_obj[str_const.reason] ~= nil then
-    return false
+  for i, claim_spec in ipairs(claim_specs) do
+    if type(claim_spec) ~= str_const.table then
+      error("Claim spec must be a table - see jwt-validators.lua for helper functions", 0)
+    end
+    if is_legacy_validation_options(claim_spec) then
+      claim_spec = get_claim_spec_from_legacy_options(self, claim_spec)
+      claim_specs[i] = claim_spec
+    end
+    for _, fx in pairs(claim_spec) do
+      if type(fx) ~= str_const.funct then
+        error("Claim spec value must be a function - see jwt-validators.lua for helper functions", 0)
+      end
+    end
   end
+  return claim_specs
+end
 
+-- Validates the claims of an authenticated object against prepared claim specs.
+-- Must only be called once the signature/authentication tag has been verified,
+-- so validators never see (or leak, through failure reasons) forged claims.
+local function validate_claims(jwt_obj, claim_specs)
   -- Encode the current jwt_obj and use it when calling the individual validation functions
   local jwt_json = cjson_encode(jwt_obj)
   -- Claims only exist in JSON object payloads. Indexing a string payload would
@@ -1514,14 +1534,7 @@ local function validate_claims(self, jwt_obj, ...)
 
   -- Validate all our specs
   for _, claim_spec in ipairs(claim_specs) do
-    if is_legacy_validation_options(claim_spec) then
-      claim_spec = get_claim_spec_from_legacy_options(self, claim_spec)
-    end
     for claim, fx in pairs(claim_spec) do
-      if type(fx) ~= str_const.funct then
-        error("Claim spec value must be a function - see jwt-validators.lua for helper functions", 0)
-      end
-
       local val
       if claim == str_const.full_obj then
         val = cjson_decode(jwt_json)
@@ -1549,31 +1562,11 @@ local function validate_claims(self, jwt_obj, ...)
   return true
 end
 
---@function verify jwt object
+--@function verify the signature of a JWS object
 --@param secret
 --@param jwt_object
---@leeway
---@return verified jwt payload or jwt object with error code
-function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
-  if not jwt_obj.valid then
-    return jwt_obj
-  end
-
-  if type(jwt_obj[str_const.header]) ~= str_const.table then
-    jwt_obj[str_const.reason] = "invalid header"
-    return jwt_obj
-  end
-
-  -- validate any claims that have been passed in
-  if not validate_claims(self, jwt_obj, ...) then
-    return jwt_obj
-  end
-
-  -- if jwe, invoked verify jwe
-  if jwt_obj.typ == str_const.JWE or (jwt_obj.typ == nil and jwt_obj.internal ~= nil and jwt_obj[str_const.header][str_const.enc]) then
-    return verify_jwe_obj(jwt_obj)
-  end
-
+--@return jwt_obj with verified/reason set, or a new failure table
+local function verify_jws_signature(self, secret, jwt_obj)
   local alg = jwt_obj[str_const.header][str_const.alg]
 
   if alg == nil then
@@ -1729,6 +1722,48 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
   end
   return jwt_obj
 
+end
+
+--@function verify jwt object
+--@param secret
+--@param jwt_object
+--@param ... claim specs (see jwt-validators.lua) or legacy validation options
+--@return verified jwt payload or jwt object with error code
+function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
+  if not jwt_obj.valid then
+    return jwt_obj
+  end
+
+  if type(jwt_obj[str_const.header]) ~= str_const.table then
+    jwt_obj[str_const.reason] = "invalid header"
+    return jwt_obj
+  end
+
+  local claim_specs = prepare_claim_specs(self, jwt_obj, ...)
+
+  -- never trust a verdict left on the object by an earlier verification
+  jwt_obj[str_const.verified] = false
+  jwt_obj[str_const.reason] = nil
+
+  -- authenticate first: a signature failure takes precedence over claims
+  if jwt_obj.typ == str_const.JWE or (jwt_obj.typ == nil and jwt_obj.internal ~= nil and jwt_obj[str_const.header][str_const.enc]) then
+    verify_jwe_obj(jwt_obj)
+  else
+    local ret = verify_jws_signature(self, secret, jwt_obj)
+    if ret ~= jwt_obj then
+      return ret
+    end
+  end
+
+  if not jwt_obj[str_const.verified] then
+    return jwt_obj
+  end
+
+  -- only claims of an authenticated token get validated
+  if not validate_claims(jwt_obj, claim_specs) then
+    jwt_obj[str_const.verified] = false
+  end
+  return jwt_obj
 end
 
 
