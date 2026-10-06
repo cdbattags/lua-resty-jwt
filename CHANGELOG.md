@@ -147,7 +147,8 @@ Other:
 
 ### Changed
 
-- The trusted-certs store is cached per worker and path.
+- The trusted-certs store is cached per worker and path: edits to the file under the same
+  path are not picked up until nginx reloads.
 - Internal HMAC uses `resty.openssl.hmac`. The vendored `resty.hmac` is still shipped in the
   LuaRocks package but unused, and will be removed in 1.0.
 - base64url encoding and decoding use lua-resty-core's `ngx.base64` (with the old code as a

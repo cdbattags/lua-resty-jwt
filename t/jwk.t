@@ -869,3 +869,57 @@ classes: true true true
 decrypt: cek true
 --- no_error_log
 [error]
+
+
+
+=== TEST 16: per-request instances setting a trusted certs file reuse the cached store
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local evp = require "resty.evp"
+            local x509 = require "resty.openssl.x509"
+
+            local der = assert(x509.new(read_file("cert.pem"))):tostring("DER")
+            local token = sign("cert-key.pem", { alg = "RS256", x5c = { ngx.encode_base64(der) } })
+
+            local before = evp.trust_store_loads
+            -- the per-request pattern: a fresh instance sets its path each time
+            for i = 1, 5 do
+                local j = jwt:new()
+                j:set_trusted_certs_file("/lua-resty-jwt/testcerts/root.pem")
+                show(j:verify(nil, token))
+            end
+            ngx.say("instance loads: ", evp.trust_store_loads - before)
+
+            -- instances using another file don't drop the module's cached store
+            before = evp.trust_store_loads
+            jwt:set_trusted_certs_file("/lua-resty-jwt/testcerts/root.pem")
+            show(jwt:verify(nil, token))
+            for i = 1, 3 do
+                local j = jwt:new()
+                j:set_trusted_certs_file("/lua-resty-jwt/testcerts/ec_cert.pem")
+                ngx.say(j:verify(nil, token).verified)
+            end
+            show(jwt:verify(nil, token))
+            ngx.say("mixed loads: ", evp.trust_store_loads - before)
+        }
+    }
+--- request
+GET /t
+--- response_body
+true everything is awesome~ :p
+true everything is awesome~ :p
+true everything is awesome~ :p
+true everything is awesome~ :p
+true everything is awesome~ :p
+instance loads: 1
+true everything is awesome~ :p
+false
+false
+false
+true everything is awesome~ :p
+mixed loads: 1
+--- no_error_log
+[error]

@@ -423,7 +423,7 @@ Registered header names and `b64` (RFC 7797 unencoded payloads are not supported
 
 Set a PEM file containing trusted CA certificates for `x5c`/`x5u` based verification of RS256/ES256 tokens.
 
-The file is read once per worker and the resulting certificate store is cached by path. Setting a different path drops the cache, so the next verification reads the file again. To pick up a changed file under the same path, reload nginx, or set another path and then the original one again.
+The file is read once per worker and the resulting certificate store is cached by path, so edits to the file under the same path are not picked up until nginx reloads. When an object (the module, or one `jwt.new()` instance) replaces the path it set earlier with another one, the store cached for the replaced path is dropped, so setting another path and then the original one again on the same object re-reads the file. A fresh instance has no path of its own, so the per-request pattern `local j = jwt.new(); j:set_trusted_certs_file(path)` drops nothing and keeps using the cached store. On an instance, `nil` removes the instance's own path, and the module's setting applies again.
 
 ## set_pbes2_max_count
 

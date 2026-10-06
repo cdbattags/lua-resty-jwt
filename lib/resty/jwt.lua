@@ -1463,12 +1463,16 @@ end
 --- Initialize the trusted certs
 -- During RS256 verify, we'll make sure the
 -- cert was signed by one of these
--- The file is read once per worker and cached; setting a different path
--- drops the cache, so the next verification re-reads the file.
+-- The file is read once per worker and cached by path. Replacing the path
+-- an object (module or instance) set itself drops the replaced path's
+-- cached store, so switching away and back re-reads that file. A fresh
+-- instance has no path of its own, so setting one drops nothing.
+-- On an instance, nil means "no path of its own": the module's applies.
 ---@param filename string? PEM file of trusted CA certificates
 function _M.set_trusted_certs_file(self, filename)
-  if filename ~= self.trusted_certs_file then
-    evp.clear_trust_store_cache()
+  local previous = rawget(self, "trusted_certs_file")
+  if previous ~= nil and previous ~= filename then
+    evp.clear_trust_store_cache(previous)
   end
   self.trusted_certs_file = filename
 end

@@ -853,17 +853,23 @@ function Cert.get_public_key(self)
 end
 
 -- Per worker cache of the X509_STOREs built from trusted certs files, keyed by
--- path, so the file isn't re-read on every verification. Cleared by
--- clear_trust_store_cache() (resty.jwt does so when the trusted certs file
--- path changes).
+-- path, so the file isn't re-read on every verification. Entries are dropped
+-- by clear_trust_store_cache() (resty.jwt drops a path's entry when an object
+-- replaces that path with another one).
 local trust_stores = {}
 
 --- Number of times a trusted certs file was read (test hook)
 _M.trust_store_loads = 0
 
---- Drop the cached trusted cert stores; the files are re-read on next use
-function _M.clear_trust_store_cache()
-    trust_stores = {}
+--- Drop the cached trusted cert store of one file, or of every file when
+-- no path is given; the files are re-read on next use
+-- @param trusted_cert_file (optional) path of the file to drop
+function _M.clear_trust_store_cache(trusted_cert_file)
+    if trusted_cert_file ~= nil then
+        trust_stores[trusted_cert_file] = nil
+    else
+        trust_stores = {}
+    end
 end
 
 local function _get_trust_store(trusted_cert_file)
