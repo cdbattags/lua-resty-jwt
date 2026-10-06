@@ -74,7 +74,10 @@ Parsing:
 
 JWE:
 - `jwt:set_alg_whitelist` now also applies to JWE `alg` **and** `enc`, checked before any key work.
-- Every JWE authentication or decryption failure returns the single reason `failed to decrypt JWE`.
+- Every JWE tag/MAC check, key unwrap, content decryption and decompression failure returns
+  the single reason `failed to decrypt JWE`. Malformed IV or tag lengths and invalid header
+  parameters (`p2c`, `p2s`, `iv`/`tag` of AES-GCM key wrap, ...) are rejected earlier, with
+  their own reasons.
 - AES-GCM JWE always uses 16-byte tags, for content encryption and for AES-GCM key wrap.
   0.3.x emitted 8-byte tags for A128GCM/A128GCMKW and 12-byte tags for A192GCM/A192GCMKW;
   those tokens no longer decrypt.
@@ -90,11 +93,17 @@ JWE:
   `apu`/`apv` are rejected; `epk` is validated (EC P-256/384/521 only; secp256k1 refused).
 - `zip` (which 0.3.x ignored) is rejected on a JWS. On a JWE, unknown `zip` values are
   rejected before key work.
+- A `zip: "DEF"` JWE is now decompressed by default, with the built-in provider over the
+  system zlib (0.3.x ignored `zip` and returned the compressed bytes). PR #71 made
+  compression opt-in; 0.4.0 builds it in.
 
 Token output:
 - `sign` serializes the header with a stable parameter order (`typ`, `alg`, `enc`, `zip`,
   `kid`, then the rest sorted by name), so the same input always gives the same token. The
   token bytes can differ from what 0.3.x produced for the same input; both verify.
+- A payload encoder set with `set_payload_encoder` (on the module or an instance) is now
+  also used when signing a JWS, not only a JWE, so an application that set one for JWE
+  gets it applied to its JWS payloads too (see Fixed).
 - A JWE keeps its `typ` header (RFC 7516 4.1.11); 0.3.x silently dropped it. A JWE signed
   with `typ` now carries it in the protected header, so `verify_with`'s `typ` option and
   `validators.typ_is` can check it. `sign` no longer adds `epk`, `iv`, `tag`, `p2s` or `p2c`
@@ -114,9 +123,22 @@ Packaging:
 - `resty.evp` and `resty.jwt-validators` no longer have a `_VERSION` (it was a stale
   "0.2.4"). `resty.jwt`'s `_VERSION` is the release version.
 
+Reason strings:
+- Some `reason` strings changed. Match on `verified`, not on `reason` text:
+  - a non-canonical signature encoding gives `invalid jwt string: non-canonical base64url
+    in signature` (0.3.x: `Wrongly encoded signature`, or `Verification failed` from
+    `resty.evp`);
+  - `invalid secret type (must be string or function)` is now `invalid secret type (must
+    be string, function, JWK or key object)`;
+  - a key of the wrong type or curve for the alg gives `key type mismatch: …` (0.3.x: for
+    example `signature length != 2 * order length`, or a crash);
+  - JWE authentication and decryption failures give `failed to decrypt JWE` (see JWE).
+
 Other:
 - A JSON-string secret with a `kty` or `keys` member is parsed as a JWK, not used as raw
   HMAC bytes.
+- A secret function must return a string. Any other non-nil value fails with
+  `function returned a non-string secret for kid: …`.
 - `sign` raises `invalid typ: must be a string` for a non-string `typ` (0.3.x raised a Lua
   error for a table).
 
@@ -154,6 +176,11 @@ Other:
 
 ### Changed
 
+- `sign`'s default `typ` check is wider: besides `JWT` and `JWE` it accepts the registered
+  `+jwt` types (`at+jwt`, `dpop+jwt`, `token-introspection+jwt`,
+  `client-authentication+jwt`, `secevent+jwt`, `logout+jwt`), compared case-insensitively
+  and ignoring an `application/` prefix. 0.3.x accepted only the exact strings `JWT` and
+  `JWE`. Use `jwt:set_typ_whitelist` to narrow it.
 - The trusted-certs store is cached per worker and path: edits to the file under the same
   path are not picked up until nginx reloads.
 - Internal HMAC uses `resty.openssl.hmac`. The vendored `resty.hmac` is still shipped in the
@@ -209,8 +236,9 @@ The changes you are most likely to hit, and what to do about them:
    Declare the extensions you understand with `jwt:set_crit_whitelist({ "ext" })` and
    enforce them with `__header` validators.
 5. **A128GCM/A192GCM tokens from 0.3.x fail** (`invalid JWE authentication tag length`), as
-   do A128GCMKW/A192GCMKW ones (`invalid iv/tag length in header for AES-GCM key wrap`). 0.3.x emitted truncated tags that no other library accepts,
-   and there is no compatibility switch: re-issue them with 0.4.0.
+   do A128GCMKW/A192GCMKW ones (`invalid iv/tag length in header for AES-GCM key wrap`).
+   0.3.x emitted truncated tags that no other library accepts, and there is no
+   compatibility switch: re-issue them with 0.4.0.
 6. **ECDH-ES+A128KW/A192KW/A256KW tokens from 0.3.x fail** (`failed to decrypt JWE`). Call
    `jwt:set_legacy_ecdh_kw_kdf(true)` while they are still in circulation, then turn it off;
    it will be removed in 1.0. Direct `ECDH-ES` tokens whose `apu`/`apv` contain `-`, `_`,
