@@ -245,3 +245,40 @@ A128GCMKW nil: false invalid key for A128GCMKW: expected a string
 PBES2 password: true
 --- no_error_log
 [error]
+
+
+
+=== TEST 8: an ES* signature that isn't exactly twice the curve order size is refused
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local evp = require "resty.evp"
+            local function read(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local c = f:read("*a"); f:close(); return c
+            end
+            local pub = read("ec_cert_p521_pubkey.pem")
+            local token = jwt:sign(read("ec_cert_p521-key.pem"), { header = { typ = "JWT", alg = "ES512" }, payload = { foo = "bar" } })
+            local signing_input, encoded_sig = token:match("^(.+)%.([^.]+)$")
+            local sig = jwt:jwt_decode(encoded_sig)
+            ngx.say("raw length: ", #sig, " verifies: ", tostring(jwt:verify(pub, token).verified))
+            for _, c in ipairs({ { "131 bytes", sig:sub(1, -2) }, { "133 bytes", sig .. "\0" }, { "empty", "" } }) do
+                -- through the library, and straight into the FFI verifier
+                local obj = jwt:verify(pub, signing_input .. "." .. jwt:jwt_encode(c[2]))
+                local verifier = assert(evp.ECVerifier:new(assert(evp.PublicKey:new(pub))))
+                local ok, err = verifier:verify(signing_input, c[2], evp.CONST.SHA512_DIGEST)
+                ngx.say(c[1], ": ", tostring(obj.verified), " ", obj.reason, " | evp: ", tostring(ok), " ", err)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+raw length: 132 verifies: true
+131 bytes: false signature length != 2 * order length | evp: nil signature length != 2 * order length
+133 bytes: false signature length != 2 * order length | evp: nil signature length != 2 * order length
+empty: false invalid jwt string: empty signature | evp: nil signature length != 2 * order length
+--- no_error_log
+[error]

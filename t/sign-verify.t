@@ -889,14 +889,18 @@ bar
             end)
             if ok then
                 ngx.say("FAIL: expected error, got token")
+            elseif type(ret) ~= "table" then
+                ngx.say("FAIL: raised a Lua error: ", tostring(ret))
             else
-                ngx.say("OK: " .. tostring(ret.reason or ret))
+                -- OpenSSL's own error text follows the prefix; only the prefix is ours
+                ngx.say("OK: ", ret.reason:match("^(signer error): ") or ret.reason)
             end
         }
     }
 --- request
 GET /t
---- response_body_like: ^OK: .*
+--- response_body
+OK: signer error
 --- no_error_log
 [error]
 
