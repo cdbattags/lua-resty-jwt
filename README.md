@@ -37,6 +37,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [set_trusted_certs_file](#set_trusted_certs_file)
     * [set_pbes2_max_count](#set_pbes2_max_count)
     * [sign JWE](#sign-jwe)
+    * [set_legacy_ecdh_kw_kdf](#set_legacy_ecdh_kw_kdf)
 * [Verification](#verification)
     * [JWT Validators](#jwt-validators)
     * [Legacy/Timeframe options](#legacy-timeframe-options)
@@ -258,6 +259,20 @@ The `enc` argument specifies which content encryption algorithm to use (`A128CBC
 ```
 
 When a JWE fails authentication or decryption (bad tag or MAC, wrong key, tampered ciphertext or encrypted key) the result's `reason` is always `failed to decrypt JWE`, so it cannot be used as an oracle. Details are logged at `ngx.DEBUG`.
+
+[Back to TOC](#table-of-contents)
+
+## set_legacy_ecdh_kw_kdf
+
+`syntax: jwt:set_legacy_ecdh_kw_kdf(true)`
+
+**Deprecated, will be removed in 1.0.** Versions 0.3.0 - 0.3.2 derived the `ECDH-ES+A128KW`/`ECDH-ES+A192KW`/`ECDH-ES+A256KW`
+key wrapping key with a non-standard Concat KDF (AlgorithmID `A128KW` instead of `ECDH-ES+A128KW`, and `apu`/`apv`
+decoded as standard base64), so those tokens did not interoperate with other JOSE libraries. Tokens are now produced
+and decrypted as specified in RFC 7518 Section 4.6. Enabling this flag (it is off by default) lets decryption fall back
+to the old derivation, so tokens issued by 0.3.x can still be read while they expire. Signing always uses RFC 7518.
+
+`apu`/`apv` header values must be base64url; a JWE with a value that is not is rejected.
 
 [Back to TOC](#table-of-contents)
 
