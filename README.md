@@ -34,6 +34,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [load and verify](#load--verify)
     * [set_alg_whitelist](#set_alg_whitelist)
     * [set_trusted_certs_file](#set_trusted_certs_file)
+    * [set_pbes2_max_count](#set_pbes2_max_count)
     * [sign JWE](#sign-jwe)
 * [Verification](#verification)
     * [JWT Validators](#jwt-validators)
@@ -182,6 +183,15 @@ local jwt_obj = jwt:verify(public_key, jwt_token)
 --   "whitelist unsupported alg: HS256"
 ```
 
+For JWE tokens the whitelist is checked when the token is loaded, before any key is unwrapped or derived, and **both** the key management `alg` and the content encryption `enc` must be present:
+
+```lua
+-- Only accept RSA-OAEP-256 + A256GCM encrypted tokens (plus RS256 JWS)
+jwt:set_alg_whitelist({ RS256 = 1, ["RSA-OAEP-256"] = 1, A256GCM = 1 })
+-- A JWE with a disallowed enc fails with:
+--   "whitelist unsupported enc: A128CBC-HS256"
+```
+
 Pass `nil` to clear the whitelist and allow all algorithms again.
 
 ## set_trusted_certs_file
@@ -189,6 +199,14 @@ Pass `nil` to clear the whitelist and allow all algorithms again.
 `syntax: jwt:set_trusted_certs_file(filename)`
 
 Set a PEM file containing trusted CA certificates for `x5c`/`x5u` based verification of RS256/ES256 tokens.
+
+## set_pbes2_max_count
+
+`syntax: jwt:set_pbes2_max_count(max_count)`
+
+Set the highest PBES2 iteration count (`p2c` header) accepted when decrypting `PBES2-HS*+A*KW` tokens. The count is chosen by whoever built the token and PBKDF2 runs inside the nginx worker, so tokens above the cap are rejected before any key derivation. Defaults to `310000`; counts below `1000` are always rejected, and `p2s` must decode to at least 8 octets. Pass `nil` to restore the default.
+
+[Back to TOC](#table-of-contents)
 
 ## sign-jwe
 
@@ -207,6 +225,8 @@ The `enc` argument specifies which content encryption algorithm to use (`A128CBC
     "payload": {"foo": "bar"}
 }
 ```
+
+When a JWE fails authentication or decryption (bad tag or MAC, wrong key, tampered ciphertext or encrypted key) the result's `reason` is always `failed to decrypt JWE`, so it cannot be used as an oracle. Details are logged at `ngx.DEBUG`.
 
 [Back to TOC](#table-of-contents)
 
