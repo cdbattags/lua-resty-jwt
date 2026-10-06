@@ -1489,6 +1489,8 @@ _M.trusted_certs_file = nil
 --                     encryption, e.g. "A256GCM") must be in the table; this
 --                     is checked on load, before any key is unwrapped or
 --                     derived. E.g. {["RSA-OAEP-256"]=1, A256GCM=1}
+-- On an instance, nil removes the instance's own whitelist and the module's
+-- (if any) applies again: nil never lifts a module-wide restriction.
 ---@param algorithms table<string, any>? allowed names as keys, nil to clear
 function _M.set_alg_whitelist(self, algorithms)
   self.alg_whitelist = algorithms
@@ -1508,9 +1510,14 @@ function _M.set_pbes2_max_count(self, max_count)
       or max_count ~= math_floor(max_count) or max_count < PBES2_MIN_COUNT) then
     error("'max_count' is expected to be an integer >= " .. PBES2_MIN_COUNT, 0)
   end
+  -- false (not nil) so an instance gets the default, not the module's value
+  if max_count == nil then
+    max_count = false
+  end
   self.pbes2_max_count = max_count
 end
 
+-- nil or false means PBES2_DEFAULT_MAX_COUNT
 _M.pbes2_max_count = nil
 
 
@@ -2925,9 +2932,14 @@ function _M.set_zip_max_size(self, max_size)
       or max_size ~= math_floor(max_size) or max_size < 1) then
     error("'max_size' is expected to be an integer >= 1", 0)
   end
+  -- false (not nil) so an instance gets the default, not the module's value
+  if max_size == nil then
+    max_size = false
+  end
   self.zip_max_size = max_size
 end
 
+-- nil or false means the default cap (see get_zip_max_size)
 _M.zip_max_size = nil
 
 

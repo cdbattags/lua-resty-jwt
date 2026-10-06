@@ -639,3 +639,72 @@ A256CBC-HS512 bad iv: false decrypts=0
 A256CBC-HS512 valid: true decrypts=1
 --- no_error_log
 [error]
+
+
+
+=== TEST 13: nil on an instance restores the built-in PBES2 and zip caps, not the module's
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local pbes2 = jwt:sign("secret", {
+                header = { alg = "PBES2-HS256+A128KW", enc = "A128GCM" },
+                payload = { foo = "bar" },
+            })
+            local key = string.rep("k", 32)
+            local zipped = jwt:sign(key, {
+                header = { alg = "dir", enc = "A256GCM", zip = "DEF" },
+                payload = { foo = "bar" },
+            })
+
+            -- module-wide caps that reject both tokens (p2c is 4096)
+            jwt:set_pbes2_max_count(2000)
+            jwt:set_zip_max_size(10)
+            ngx.say("module pbes2: ", jwt:verify("secret", pbes2).verified)
+            ngx.say("module zip: ", jwt:verify(key, zipped).verified)
+
+            local j = jwt:new()
+            ngx.say("instance inherits pbes2: ", j:verify("secret", pbes2).verified)
+            ngx.say("instance inherits zip: ", j:verify(key, zipped).verified)
+            j:set_pbes2_max_count(nil)
+            j:set_zip_max_size(nil)
+            ngx.say("instance nil pbes2: ", j:verify("secret", pbes2).verified)
+            ngx.say("instance nil zip: ", j:verify(key, zipped).verified)
+
+            -- the module's own nil restores the default too
+            jwt:set_pbes2_max_count(nil)
+            jwt:set_zip_max_size(nil)
+            ngx.say("module nil pbes2: ", jwt:verify("secret", pbes2).verified)
+            ngx.say("module nil zip: ", jwt:verify(key, zipped).verified)
+
+            -- an instance's nil whitelist and trusted certs file inherit the
+            -- module's, so nil never lifts a module-wide restriction
+            jwt:set_alg_whitelist({ HS256 = 1 })
+            jwt:set_trusted_certs_file("/lua-resty-jwt/testcerts/root.pem")
+            local k = jwt:new()
+            k:set_alg_whitelist({ ["PBES2-HS256+A128KW"] = 1, A128GCM = 1 })
+            ngx.say("instance whitelist: ", k:verify("secret", pbes2).verified)
+            k:set_alg_whitelist(nil)
+            ngx.say("instance nil whitelist: ", k:verify("secret", pbes2).reason)
+            k:set_trusted_certs_file("/lua-resty-jwt/testcerts/ec_cert.pem")
+            k:set_trusted_certs_file(nil)
+            ngx.say("instance nil trusted certs: ", k.trusted_certs_file)
+        }
+    }
+--- request
+GET /t
+--- response_body
+module pbes2: false
+module zip: false
+instance inherits pbes2: false
+instance inherits zip: false
+instance nil pbes2: true
+instance nil zip: true
+module nil pbes2: true
+module nil zip: true
+instance whitelist: true
+instance nil whitelist: whitelist unsupported alg: PBES2-HS256+A128KW
+instance nil trusted certs: /lua-resty-jwt/testcerts/root.pem
+--- no_error_log
+[error]

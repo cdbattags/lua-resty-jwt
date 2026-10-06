@@ -356,7 +356,7 @@ jwt:set_alg_whitelist({ RS256 = 1, ["RSA-OAEP-256"] = 1, A256GCM = 1 })
 --   "whitelist unsupported enc: A128CBC-HS256"
 ```
 
-Pass `nil` to clear the whitelist and allow all algorithms again.
+Pass `nil` to clear the whitelist and allow all algorithms again. On an instance from `jwt.new()`, `nil` only removes the instance's own whitelist: the module's whitelist, if one is set, applies again, so an instance can never lift a module-wide restriction.
 
 ## set_typ_whitelist
 
@@ -429,7 +429,7 @@ The file is read once per worker and the resulting certificate store is cached b
 
 `syntax: jwt:set_pbes2_max_count(max_count)`
 
-Set the highest PBES2 iteration count (`p2c` header) accepted when decrypting `PBES2-HS*+A*KW` tokens. The count is chosen by whoever built the token and PBKDF2 runs inside the nginx worker, so tokens above the cap are rejected before any key derivation. Defaults to `10000` (the panva/jose default); raise it only if a token producer you trust uses a larger count; counts below `1000` are always rejected, and `p2s` must decode to at least 8 octets. Pass `nil` to restore the default.
+Set the highest PBES2 iteration count (`p2c` header) accepted when decrypting `PBES2-HS*+A*KW` tokens. The count is chosen by whoever built the token and PBKDF2 runs inside the nginx worker, so tokens above the cap are rejected before any key derivation. Defaults to `10000` (the panva/jose default); raise it only if a token producer you trust uses a larger count; counts below `1000` are always rejected, and `p2s` must decode to at least 8 octets. Pass `nil` to restore the default (also on an instance from `jwt.new()`, where `nil` means the built-in default, not the module's setting).
 
 [Back to TOC](#table-of-contents)
 
@@ -511,7 +511,8 @@ Set the largest decompressed payload, in bytes, accepted from a `zip` JWE. The
 default is max(250 KiB, 10 × the compressed size). An explicit value replaces
 both, so a larger value admits bigger payloads and a smaller one a tighter
 cap. Larger payloads fail with `failed to decrypt JWE`. Pass `nil` to restore
-the default.
+the default (also on an instance from `jwt.new()`, where `nil` means the
+built-in default, not the module's setting).
 
 ## register_zlib_compression
 
