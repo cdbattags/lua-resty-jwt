@@ -24,11 +24,51 @@ local _M = { _VERSION = "0.2.4" }
   checks.  It will be the string "__jwt" if the validator is being called for the entire jwt_object.
 
   "jwt_json" is a json-encoded representation of the full object that is being tested.  It will never be nil,
-  and can always be decoded using cjson.decode(jwt_json).
+  and can always be decoded using cjson.decode(jwt_json).  Serializing the object costs time, so it is only
+  built for validators that can receive it: not for the ones in this module (see needs_jwt_json) nor for
+  Lua functions declaring fewer than three parameters.
 
   "payload" is the payload table of the (already verified) object being tested, for validators that check
   more than one claim.  It is the object's own table, so it must not be modified.
 ]]--
+
+
+-- Validators built by this module, which never read their "jwt_json" argument
+local builtin_validators = setmetatable({}, { __mode = "k" })
+local function builtin(fx)
+  builtin_validators[fx] = true
+  return fx
+end
+
+-- "__jwt" validators of this module that only look at the payload argument
+local payload_validators = setmetatable({}, { __mode = "k" })
+local function payload_only(fx)
+  payload_validators[fx] = true
+  return builtin(fx)
+end
+
+--[[
+    Returns whether the validator fx may read its "jwt_json" argument, so that
+    resty.jwt only serializes the jwt object when some validator needs it.
+    False for the validators built by this module and for Lua functions
+    declaring fewer than three parameters (and no varargs).
+]]--
+function _M.needs_jwt_json(fx)
+  if builtin_validators[fx] then
+    return false
+  end
+  local info = debug.getinfo(fx, "u")
+  return info == nil or info.isvararg or info.nparams == nil or info.nparams >= 3
+end
+
+--[[
+    Returns whether the "__jwt" validator fx needs its "val" argument (a deep
+    copy of the jwt object).  False for require_one_of and required_claims,
+    which use the payload argument instead.
+]]--
+function _M.needs_jwt_copy(fx)
+  return not payload_validators[fx]
+end
 
 
 --[[
@@ -36,8 +76,9 @@ local _M = { _VERSION = "0.2.4" }
     versions.  The function that is passed in is the *optional* version.
 ]]--
 local function define_validator(name, fx)
-  _M["opt_" .. name] = fx
-  _M[name] = function(...) return _M.chain(_M.required(), fx(...)) end
+  local opt = function(...) return builtin(fx(...)) end
+  _M["opt_" .. name] = opt
+  _M[name] = function(...) return _M.chain(_M.required(), opt(...)) end
 end
 
 -- Validation messages
@@ -149,7 +190,7 @@ function _M.chain(...)
     ensure_is_type(fx, "function", messages.wrong_type_validator, "function", "chain_function")
   end
 
-  return function(val, claim, jwt_json, payload)
+  local chained = function(val, claim, jwt_json, payload)
     for _, fx in ipairs(chain_functions) do
       if fx(val, claim, jwt_json, payload) == false then
         return false
@@ -157,6 +198,12 @@ function _M.chain(...)
     end
     return true
   end
+  for _, fx in ipairs(chain_functions) do
+    if not builtin_validators[fx] then
+      return chained
+    end
+  end
+  return builtin(chained)
 end
 
 --[[
@@ -173,10 +220,10 @@ function _M.required(chain_function)
     return _M.chain(_M.required(), chain_function)
   end
 
-  return function(val, claim, jwt_json)
+  return builtin(function(val, claim, jwt_json)
     ensure_not_nil(val, messages.required_claim, claim)
     return true
-  end
+  end)
 end
 
 --[[
@@ -190,16 +237,20 @@ function _M.require_one_of(claim_keys)
   ensure_is_table(claim_keys, messages.empty_table_validator, "claim_keys")
   ensure_is_table_type(claim_keys, "string", messages.wrong_table_type_validator, "string", "claim_keys")
 
-  return function(val, claim, jwt_json)
-    ensure_is_type(val, "table", messages.wrong_type_claim, claim, "table")
-    ensure_is_type(val.payload, "table", messages.wrong_type_claim, claim .. ".payload", "table")
+  return payload_only(function(val, claim, jwt_json, payload)
+    -- called without a payload: use the jwt object given for "__jwt"
+    if payload == nil then
+      ensure_is_type(val, "table", messages.wrong_type_claim, claim, "table")
+      payload = val.payload
+    end
+    ensure_is_type(payload, "table", messages.wrong_type_claim, claim .. ".payload", "table")
 
     for i, v in ipairs(claim_keys) do
-      if val.payload[v] ~= nil then return true end
+      if payload[v] ~= nil then return true end
     end
 
     error(string.format(messages.missing_claim, table.concat(claim_keys, ", ")), 0)
-  end
+  end)
 end
 
 --[[
@@ -570,7 +621,7 @@ function _M.required_claims(claim_keys)
   ensure_is_table(claim_keys, messages.empty_table_validator, "claim_keys")
   ensure_is_table_type(claim_keys, "string", messages.wrong_table_type_validator, "string", "claim_keys")
 
-  return function(val, claim, jwt_json, payload)
+  return payload_only(function(val, claim, jwt_json, payload)
     -- called directly, without a payload: use the jwt object given for "__jwt"
     if payload == nil and type(val) == "table" then
       payload = val.payload
@@ -583,7 +634,7 @@ function _M.required_claims(claim_keys)
       end
     end
     return true
-  end
+  end)
 end
 
 
@@ -623,19 +674,19 @@ function _M.opt_typ_is(expected)
   for _, v in ipairs(expected) do
     accepted[_M.normalize_typ(v)] = true
   end
-  return function(val, claim, jwt_json)
+  return builtin(function(val, claim, jwt_json)
     if val == nil then return true end
 
     ensure_is_type(val, "string", messages.wrong_type_claim, claim, "string")
     return accepted[_M.normalize_typ(val)] == true
-  end
+  end)
 end
 
 function _M.typ_is(expected)
-  return _M.chain(function(val, claim, jwt_json)
+  return _M.chain(builtin(function(val, claim, jwt_json)
     ensure_not_nil(val, messages.required_header, claim)
     return true
-  end, _M.opt_typ_is(expected))
+  end), _M.opt_typ_is(expected))
 end
 
 

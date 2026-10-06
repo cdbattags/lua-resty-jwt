@@ -1391,6 +1391,8 @@ _M.pbes2_max_count = nil
 
 
 local normalize_typ = jwt_validators.normalize_typ
+local needs_jwt_json = jwt_validators.needs_jwt_json
+local needs_jwt_copy = jwt_validators.needs_jwt_copy
 
 -- Default "typ" whitelist for sign: JWT (RFC 7519), JWE (RFC 7516), and the
 -- RFC-registered "+jwt" structured-syntax values:
@@ -2130,8 +2132,16 @@ local function run_validator(jwt_obj, fx, val, name, jwt_json, kind)
 end
 
 local function validate_claims(jwt_obj, claim_specs)
-  -- Encode the current jwt_obj and use it when calling the individual validation functions
-  local jwt_json = cjson_encode(jwt_obj)
+  -- The JSON encoded jwt_obj passed to validators as jwt_json. Encoding it is
+  -- costly, so it is built on first use: the validators of resty.jwt-validators
+  -- and functions declaring fewer than three parameters never see it.
+  local jwt_json
+  local function get_jwt_json()
+    if jwt_json == nil then
+      jwt_json = cjson_encode(jwt_obj)
+    end
+    return jwt_json
+  end
   -- Claims only exist in JSON object payloads. Indexing a string payload would
   -- otherwise hit the string library (e.g. "sub" -> string.sub).
   local payload = jwt_obj[str_const.payload]
@@ -2142,18 +2152,23 @@ local function validate_claims(jwt_obj, claim_specs)
     for claim, fx in pairs(claim_spec) do
       if claim == str_const.header_specs then
         for name, header_fx in pairs(fx) do
-          if not run_validator(jwt_obj, header_fx, header[name], name, jwt_json, "Header") then
+          local json = needs_jwt_json(header_fx) and get_jwt_json() or nil
+          if not run_validator(jwt_obj, header_fx, header[name], name, json, "Header") then
             return false
           end
         end
       else
         local val
         if claim == str_const.full_obj then
-          val = cjson_decode(jwt_json)
+          -- a deep copy, so validators can't modify the object
+          if needs_jwt_copy(fx) then
+            val = cjson_decode(get_jwt_json())
+          end
         elseif type(payload) == str_const.table then
           val = payload[claim]
         end
-        if not run_validator(jwt_obj, fx, val, claim, jwt_json, "Claim") then
+        local json = needs_jwt_json(fx) and get_jwt_json() or nil
+        if not run_validator(jwt_obj, fx, val, claim, json, "Claim") then
           return false
         end
       end

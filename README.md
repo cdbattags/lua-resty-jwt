@@ -556,7 +556,7 @@ The signature of a `validator` function is:
 function(val, claim, jwt_json, payload)
 ```
 
-Where `val` is the value of the claim from the `jwt_obj` being tested (or nil if it doesn't exist in the object's payload), `claim` is the name of the claim that is being verified, `jwt_json` is a json-serialized representation of the object that is being verified, and `payload` is the verified payload itself (for validators that look at more than one claim; it is the object's own table, so don't modify it).  If the function has no need of the `claim`, `jwt_json` or `payload` parameters, they may be left off.
+Where `val` is the value of the claim from the `jwt_obj` being tested (or nil if it doesn't exist in the object's payload), `claim` is the name of the claim that is being verified, `jwt_json` is a json-serialized representation of the object that is being verified, and `payload` is the verified payload itself (for validators that look at more than one claim; it is the object's own table, so don't modify it).  If the function has no need of the `claim`, `jwt_json` or `payload` parameters, they may be left off: serializing the object costs time, so `jwt_json` is only built when some validator declares that parameter (or takes `...`).  The validators of `resty.jwt-validators` never need it.
 
 A `validator` function returns either `true` or `false`.  Any `validator` *MAY* raise an error, and the validation will be treated as a failure, and the error that was raised will be put into the reason field of the resulting object.  If a `validator` returns nothing (i.e. `nil`), then the function is treated to have succeeded - under the assumption that it would have raised an error if it would have failed.
 
