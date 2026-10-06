@@ -311,3 +311,94 @@ false true
 false true
 --- no_error_log
 [error]
+
+
+=== TEST 9: claims of a non-JSON (string) payload are nil
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local token = jwt:sign("secret", {header={typ="JWT", alg="HS256"}, payload="hello world"})
+            local obj = jwt:verify("secret", token)
+            ngx.say(obj.verified, " ", obj.payload)
+
+            for _, claim in ipairs({"sub", "len", "format", "rep"}) do
+                obj = jwt:verify("secret", token, {[claim]=validators.required()})
+                ngx.say(claim, ": ", obj.verified, " ", obj.reason)
+            end
+            local seen = "unset"
+            obj = jwt:verify("secret", token, {sub=function(val) seen = type(val) end})
+            ngx.say(obj.verified, " ", seen)
+        }
+    }
+--- request
+GET /t
+--- response_body
+true hello world
+sub: false 'sub' claim is required.
+len: false 'len' claim is required.
+format: false 'format' claim is required.
+rep: false 'rep' claim is required.
+true nil
+--- no_error_log
+[error]
+
+
+=== TEST 10: number/boolean JSON payloads don't crash claim validation
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            for _, p in ipairs({"123", "true", "[1,2]"}) do
+                local token = hs_token("secret", {alg="HS256"}, p)
+                local obj = jwt:verify("secret", token)
+                ngx.say(p, ": ", obj.verified, " ", obj.reason)
+                obj = jwt:verify("secret", token, {exp=validators.is_not_expired()})
+                ngx.say(p, ": ", obj.verified, " ", obj.reason)
+            end
+            -- x5u retriever receives a nil iss for a non-object payload
+            jwt:set_trusted_certs_file("/lua-resty-jwt/testcerts/root.pem")
+            local got_iss = "unset"
+            jwt:set_x5u_content_retriever(function(url, iss) got_iss = iss return nil end)
+            local obj = jwt:verify(nil, make_token({alg="RS256", x5u="https://x"}, "123"))
+            ngx.say(obj.verified, " ", got_iss)
+        }
+    }
+--- request
+GET /t
+--- response_body
+123: true everything is awesome~ :p
+123: false 'exp' claim is required.
+true: true everything is awesome~ :p
+true: false 'exp' claim is required.
+[1,2]: true everything is awesome~ :p
+[1,2]: false 'exp' claim is required.
+false nil
+--- no_error_log
+[error]
+
+
+=== TEST 11: validator raising a non-string error gives a clean reason
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local token = jwt:sign("secret", {header={typ="JWT", alg="HS256"}, payload={foo={1,2}}})
+            local obj = jwt:verify("secret", token, {foo=function() error({}) end})
+            ngx.say(obj.verified, " ", obj.reason)
+            obj = jwt:verify("secret", token, {foo=function() return false end})
+            ngx.say(obj.verified, " ", obj.reason:find("^Claim 'foo' %('table: ") ~= nil)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false Claim 'foo' validation failed
+false true
+--- no_error_log
+[error]

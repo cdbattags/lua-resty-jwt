@@ -1436,6 +1436,9 @@ local function validate_claims(self, jwt_obj, ...)
 
   -- Encode the current jwt_obj and use it when calling the individual validation functions
   local jwt_json = cjson_encode(jwt_obj)
+  -- Claims only exist in JSON object payloads. Indexing a string payload would
+  -- otherwise hit the string library (e.g. "sub" -> string.sub).
+  local payload = jwt_obj[str_const.payload]
 
   -- Validate all our specs
   for _, claim_spec in ipairs(claim_specs) do
@@ -1447,13 +1450,24 @@ local function validate_claims(self, jwt_obj, ...)
         error("Claim spec value must be a function - see jwt-validators.lua for helper functions", 0)
       end
 
-      local val = claim == str_const.full_obj and cjson_decode(jwt_json) or (jwt_obj.payload and jwt_obj.payload[claim])
+      local val
+      if claim == str_const.full_obj then
+        val = cjson_decode(jwt_json)
+      elseif type(payload) == str_const.table then
+        val = payload[claim]
+      end
       local success, ret = pcall(fx, val, claim, jwt_json)
       if not success then
-        jwt_obj[str_const.reason] = ret.reason or string.gsub(ret, "^.-:%d-: ", "")
+        if type(ret) == str_const.table and ret.reason ~= nil then
+          jwt_obj[str_const.reason] = tostring(ret.reason)
+        elseif type(ret) == str_const.string then
+          jwt_obj[str_const.reason] = string.gsub(ret, "^.-:%d-: ", "")
+        else
+          jwt_obj[str_const.reason] = string.format("Claim '%s' validation failed", tostring(claim))
+        end
         return false
       elseif ret == false then
-        jwt_obj[str_const.reason] = string.format("Claim '%s' ('%s') returned failure", claim, val)
+        jwt_obj[str_const.reason] = string.format("Claim '%s' ('%s') returned failure", tostring(claim), tostring(val))
         return false
       end
     end
