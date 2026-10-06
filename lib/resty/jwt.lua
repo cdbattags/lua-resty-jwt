@@ -230,9 +230,10 @@ local function encode_header_part(header)
 end
 
 --@function get the raw part
+--@param self the module or a jwt.new() instance, whose payload encoder is used
 --@param part_name
 --@param jwt_obj
-local function get_raw_part(part_name, jwt_obj)
+local function get_raw_part(self, part_name, jwt_obj)
   local raw_part = jwt_obj[str_const.raw_underscore .. part_name]
   if raw_part == nil then
     local part = jwt_obj[part_name]
@@ -242,7 +243,7 @@ local function get_raw_part(part_name, jwt_obj)
     if part_name == str_const.header then
       raw_part = encode_header_part(part)
     else
-      raw_part = _M:jwt_encode(part)
+      raw_part = _M.jwt_encode(self, part, true)
     end
   end
   return raw_part
@@ -1854,10 +1855,10 @@ end
 
 --@function verify the HMAC signature of a JWS object
 --@return nil on success, failure reason otherwise
-local function verify_hmac_signature(secret, jwt_obj, alg)
+local function verify_hmac_signature(self, secret, jwt_obj, alg)
   local secret_str = get_secret_str(secret, jwt_obj, "verify")
-  local raw_header = get_raw_part(str_const.header, jwt_obj)
-  local raw_payload = get_raw_part(str_const.payload, jwt_obj)
+  local raw_header = get_raw_part(self, str_const.header, jwt_obj)
+  local raw_payload = get_raw_part(self, str_const.payload, jwt_obj)
   local message = string_format(str_const.regex_join_msg, raw_header, raw_payload)
   local expected = hmac_sign(alg, secret_str, message)
 
@@ -1898,8 +1899,8 @@ function _M.sign(self, secret_key, jwt_obj)
     error({reason="zip is not allowed in a JWS header"})
   end
   -- header alg check
-  local raw_header = get_raw_part(str_const.header, jwt_obj)
-  local raw_payload = get_raw_part(str_const.payload, jwt_obj)
+  local raw_header = get_raw_part(self, str_const.header, jwt_obj)
+  local raw_payload = get_raw_part(self, str_const.payload, jwt_obj)
   local message = string_format(str_const.regex_join_msg, raw_header, raw_payload)
   local alg = jwt_obj[str_const.header][str_const.alg]
   local signature = ""
@@ -2277,7 +2278,7 @@ local function verify_jws_signature(self, secret, jwt_obj)
   if hmac_algs[alg] then
     -- verify directly (not via _M.sign) so sign-time header checks such as typ
     -- don't apply, and compare signatures in constant time
-    local success, ret = pcall(verify_hmac_signature, secret, jwt_obj, alg)
+    local success, ret = pcall(verify_hmac_signature, self, secret, jwt_obj, alg)
     if not success then
       jwt_obj[str_const.reason] = type(ret) == str_const.table and ret[str_const.reason] or str_const.internal_error
     elseif ret then
@@ -2363,8 +2364,8 @@ local function verify_jws_signature(self, secret, jwt_obj)
     end
 
     -- assemble jwt parts
-    local raw_header = get_raw_part(str_const.header, jwt_obj)
-    local raw_payload = get_raw_part(str_const.payload, jwt_obj)
+    local raw_header = get_raw_part(self, str_const.header, jwt_obj)
+    local raw_payload = get_raw_part(self, str_const.payload, jwt_obj)
 
     local message =string_format(str_const.regex_join_msg, raw_header ,  raw_payload)
     local sig = _M:jwt_decode(jwt_obj[str_const.signature], false)
@@ -2412,8 +2413,8 @@ local function verify_jws_signature(self, secret, jwt_obj)
       jwt_obj[str_const.reason] = key_err
       return jwt_obj
     end
-    local raw_header = get_raw_part(str_const.header, jwt_obj)
-    local raw_payload = get_raw_part(str_const.payload, jwt_obj)
+    local raw_header = get_raw_part(self, str_const.header, jwt_obj)
+    local raw_payload = get_raw_part(self, str_const.payload, jwt_obj)
     local message = string_format(str_const.regex_join_msg, raw_header, raw_payload)
     local sig = _M:jwt_decode(jwt_obj[str_const.signature], false)
     if not sig then
