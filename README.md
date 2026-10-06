@@ -518,10 +518,10 @@ Both the `jwt:load` and `jwt:verify_jwt_obj` functions take, as additional param
 The signature of a `validator` function is:
 
 ```
-function(val, claim, jwt_json)
+function(val, claim, jwt_json, payload)
 ```
 
-Where `val` is the value of the claim from the `jwt_obj` being tested (or nil if it doesn't exist in the object's payload), `claim` is the name of the claim that is being verified, and `jwt_json` is a json-serialized representation of the object that is being verified.  If the function has no need of the `claim` or `jwt_json`, parameters, they may be left off.
+Where `val` is the value of the claim from the `jwt_obj` being tested (or nil if it doesn't exist in the object's payload), `claim` is the name of the claim that is being verified, `jwt_json` is a json-serialized representation of the object that is being verified, and `payload` is the verified payload itself (for validators that look at more than one claim; it is the object's own table, so don't modify it).  If the function has no need of the `claim`, `jwt_json` or `payload` parameters, they may be left off.
 
 A `validator` function returns either `true` or `false`.  Any `validator` *MAY* raise an error, and the validation will be treated as a failure, and the error that was raised will be put into the reason field of the resulting object.  If a `validator` returns nothing (i.e. `nil`), then the function is treated to have succeeded - under the assumption that it would have raised an error if it would have failed.
 
@@ -643,13 +643,44 @@ val >= (system_clock() - leeway) and val <= (system_clock() + leeway).
 ```
 The optional `options` table may set `{ leeway = seconds }` for this validator only; otherwise the system leeway is used.
 
+#### `validators.audience(audiences)` (opt) ####
+
+Returns a validator for the `aud` claim (RFC 7519 §4.1.3).  `audiences` is the allowed audience, or a non-empty list of them.  The claim may be a single string or an array of strings, and passes if *any* of its values is an allowed audience (compared exactly).  An `aud` that is neither a string nor an array of strings fails as malformed.
+
+#### `validators.issued_at(options)` (opt) ####
+
+Returns a validator for the `iat` claim: it must be a non-negative number and not in the future, i.e. `val <= (system_clock() + leeway)`.  The optional `options` table may set:
+
+* `max_age`: also reject tokens issued more than `max_age` seconds ago, i.e. require `system_clock() - val <= max_age + leeway`.
+* `leeway`: the leeway in seconds for this validator only; otherwise the system leeway is used.
+
+#### `validators.jti_hook(hook)` (opt) ####
+
+Returns a validator for the `jti` claim that calls `hook(jti, payload)`, for example to detect replayed tokens.  The claim must be a string.  The hook must return `true` to accept the token; returning `false`, or `nil` plus an error message, or raising an error rejects it (`'jti' claim was rejected: <message>`).  Validators only run once the signature (or a JWE's authentication tag) has been verified, so the hook never sees a forged token.  `payload` is the verified payload and must not be modified.
+
+Claim specs run in order and stop at the first failure, but the validators within one `claim_spec` run in no particular order.  To record a `jti` only for tokens that pass all other checks, put the hook in a `claim_spec` of its own, last:
+
+```lua
+local seen = ngx.shared.seen_jti  -- lua_shared_dict seen_jti 10m;
+local jwt_obj = jwt:verify(key, token,
+    { exp = validators.is_not_expired(), aud = validators.audience("api") },
+    { jti = validators.jti_hook(function(jti, payload)
+        -- add() fails with "exists" for a jti that was already used
+        return seen:add(jti, true, payload.exp - ngx.time())
+    end) })
+```
+
+#### `validators.required_claims(claim_keys)` ####
+
+Returns a validator which errors with `'<name>' claim is required.` if *ANY* of the given claim keys is missing from the payload.  It checks the whole payload, so attach it to the `__jwt` claim: `{ __jwt = validators.required_claims({ "sub", "iss" }) }`.  The `claim_keys` must be a non-empty table of strings.  A claim whose value is JSON `null` counts as present.
+
 #### `validators.typ_is(expected)` (opt) ####
 
 Returns a validator for the `typ` *header*, to be used in a `__header` table: it checks that `typ` is the `expected` string, or one of a list of strings. Values are compared case-insensitively and with an `application/` prefix ignored (RFC 7515 §4.1.9), the same way as [set_typ_whitelist](#set_typ_whitelist). The required version fails with `'typ' header is required.` when the header has no `typ`. `validators.normalize_typ(typ)` exposes the normalization.
 
 #### `validators.set_system_leeway(leeway)` ####
 
-A function to set the default leeway (in seconds) used for `is_not_before`, `is_not_expired` and `is_at` when they are not given their own `leeway`.  The default is to use `0` seconds.  This is module-wide state for the whole worker.
+A function to set the default leeway (in seconds) used for `is_not_before`, `is_not_expired`, `is_at` and `issued_at` when they are not given their own `leeway`.  The default is to use `0` seconds.  This is module-wide state for the whole worker.
 
 #### `validators.set_system_clock(clock)` ####
 

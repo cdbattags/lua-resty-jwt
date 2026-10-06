@@ -2099,7 +2099,7 @@ end
 -- @param kind "Claim" or "Header", used in generic failure reasons
 -- @return true if the validator passed
 local function run_validator(jwt_obj, fx, val, name, jwt_json, kind)
-  local success, ret = pcall(fx, val, name, jwt_json)
+  local success, ret = pcall(fx, val, name, jwt_json, jwt_obj[str_const.payload])
   if not success then
     if type(ret) == str_const.table and ret.reason ~= nil then
       jwt_obj[str_const.reason] = tostring(ret.reason)

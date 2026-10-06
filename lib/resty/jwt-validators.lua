@@ -4,7 +4,7 @@ local _M = { _VERSION = "0.2.4" }
   This file defines "validators" to be used in validating a spec.  A "validator" is simply a function with
   a signature that matches:
 
-    function(val, claim, jwt_json)
+    function(val, claim, jwt_json, payload)
 
   This function returns either true or false.  If a validator needs to give more information on why it failed,
   then it can also raise an error (which will be used in the "reason" part of the validated jwt_obj).  If a
@@ -25,6 +25,9 @@ local _M = { _VERSION = "0.2.4" }
 
   "jwt_json" is a json-encoded representation of the full object that is being tested.  It will never be nil,
   and can always be decoded using cjson.decode(jwt_json).
+
+  "payload" is the payload table of the (already verified) object being tested, for validators that check
+  more than one claim.  It is the object's own table, so it must not be modified.
 ]]--
 
 
@@ -46,7 +49,12 @@ local messages = {
   required_claim = "'%s' claim is required.",
   required_header = "'%s' header is required.",
   wrong_type_claim = "'%s' is malformed.  Expected to be a %s.",
-  missing_claim = "Missing one of claims - [ %s ]."
+  missing_claim = "Missing one of claims - [ %s ].",
+  no_allowed_audience = "'%s' claim does not contain an allowed audience.",
+  issued_in_future = "'%s' claim is in the future: issued at %s",
+  issued_too_long_ago = "'%s' claim is older than the maximum age: issued at %s",
+  hook_rejected = "'%s' claim was rejected.",
+  hook_rejected_reason = "'%s' claim was rejected: %s"
 }
 
 -- Local function to make sure that a value is non-nil or raises an error
@@ -141,9 +149,9 @@ function _M.chain(...)
     ensure_is_type(fx, "function", messages.wrong_type_validator, "function", "chain_function")
   end
 
-  return function(val, claim, jwt_json)
+  return function(val, claim, jwt_json, payload)
     for _, fx in ipairs(chain_functions) do
-      if fx(val, claim, jwt_json) == false then
+      if fx(val, claim, jwt_json, payload) == false then
         return false
       end
     end
@@ -319,8 +327,8 @@ end)
 
 
 --[[
-    A function to set the default leeway (in seconds) used for is_not_before, is_not_expired
-    and is_at when the validator isn't given its own leeway.  The default is to use 0 seconds
+    A function to set the default leeway (in seconds) used for is_not_before, is_not_expired,
+    is_at and issued_at when the validator isn't given its own leeway.  The default is to use 0 seconds
 ]]--
 local system_leeway = 0
 function _M.set_system_leeway(leeway)
@@ -436,6 +444,147 @@ define_validator("is_at", function(options)
     "is only valid at"
   )
 end)
+
+
+--[[
+    Returns a validator for the "aud" claim (RFC 7519 section 4.1.3).  The
+    claim may be a single string or an array of strings, and passes if *any* of
+    its values is one of the allowed audiences.  The value of audiences must be
+    a string or a non-empty table of strings.  An "aud" that is neither a
+    string nor an array of strings fails.
+]]--
+define_validator("audience", function(audiences)
+  if type(audiences) == "string" then
+    audiences = { audiences }
+  end
+  ensure_not_nil(audiences, messages.nil_validator, "audiences")
+  ensure_is_type(audiences, "table", messages.wrong_type_validator, "string or table", "audiences")
+  ensure_is_table(audiences, messages.empty_table_validator, "audiences")
+  ensure_is_table_type(audiences, "string", messages.wrong_table_type_validator, "string", "audiences")
+
+  local allowed = {}
+  for _, v in ipairs(audiences) do
+    allowed[v] = true
+  end
+  return function(val, claim, jwt_json)
+    if val == nil then return true end
+
+    if type(val) == "string" then
+      if allowed[val] then return true end
+    elseif type(val) == "table" then
+      -- every entry must be a string, and the table a plain array (an object
+      -- such as {"1": "api"} is not an audience list)
+      local count = 0
+      for k, v in pairs(val) do
+        if type(k) ~= "number" or type(v) ~= "string" then
+          error(string.format(messages.wrong_type_claim, claim, "string or array of strings"), 0)
+        end
+        count = count + 1
+      end
+      if count ~= #val then
+        error(string.format(messages.wrong_type_claim, claim, "string or array of strings"), 0)
+      end
+      for _, v in ipairs(val) do
+        if allowed[v] then return true end
+      end
+    else
+      error(string.format(messages.wrong_type_claim, claim, "string or array of strings"), 0)
+    end
+    error(string.format(messages.no_allowed_audience, claim), 0)
+  end
+end)
+
+
+--[[
+    Returns a validator for the "iat" claim (RFC 7519 section 4.1.6): it must
+    be a non-negative number, and not in the future within the leeway:
+      val <= (system_clock() + leeway).
+    The optional options table may set { max_age = seconds } to also reject
+    tokens issued too long ago:
+      system_clock() - val <= max_age + leeway
+    and { leeway = seconds } for this validator only; otherwise the system
+    leeway (see set_system_leeway) is used.
+]]--
+define_validator("issued_at", function(options)
+  local leeway = get_leeway_option(options)
+  local max_age = options and options.max_age
+  if max_age ~= nil then
+    ensure_is_type(max_age, "number", "max_age must be a non-negative number")
+    ensure_is_non_negative(max_age, "max_age must be a non-negative number")
+  end
+  return function(val, claim, jwt_json)
+    if val == nil then return true end
+
+    validate_is_date(val, claim, jwt_json)
+    local now = system_clock()
+    local l = leeway or system_leeway
+    if val > now + l then
+      error(string.format(messages.issued_in_future, claim, ngx.http_time(val)), 0)
+    end
+    if max_age ~= nil and now - val > max_age + l then
+      error(string.format(messages.issued_too_long_ago, claim, ngx.http_time(val)), 0)
+    end
+    return true
+  end
+end)
+
+
+--[[
+    Returns a validator for the "jti" claim that calls hook(jti, payload), e.g.
+    to detect replays.  The claim must be a string.  The hook must return true
+    to accept the token; it may return false (or nil and an error message) or
+    raise an error to reject it.  Claims are only validated once the token's
+    signature (or a JWE's authentication tag) has been verified, so the hook
+    never sees a forged token.  "payload" is the verified payload table and
+    must not be modified.
+]]--
+define_validator("jti_hook", function(hook)
+  ensure_not_nil(hook, messages.nil_validator, "hook")
+  ensure_is_type(hook, "function", messages.wrong_type_validator, "function", "hook")
+
+  return function(val, claim, jwt_json, payload)
+    if val == nil then return true end
+
+    ensure_is_type(val, "string", messages.wrong_type_claim, claim, "string")
+    local ok, err = hook(val, payload)
+    if not ok then
+      if err ~= nil then
+        error(string.format(messages.hook_rejected_reason, claim, tostring(err)), 0)
+      end
+      error(string.format(messages.hook_rejected, claim), 0)
+    end
+    return true
+  end
+end)
+
+
+--[[
+    Returns a validator which errors with a message if *ANY* of the given claim
+    keys is missing from the payload.  It checks the whole payload, so attach
+    it to the "__jwt" claim, e.g. { __jwt = required_claims({ "sub", "iss" }) }.
+    The claim_keys must be a non-empty table of strings.
+]]--
+function _M.required_claims(claim_keys)
+  ensure_not_nil(claim_keys, messages.nil_validator, "claim_keys")
+  ensure_is_type(claim_keys, "table", messages.wrong_type_validator, "table", "claim_keys")
+  ensure_is_table(claim_keys, messages.empty_table_validator, "claim_keys")
+  ensure_is_table_type(claim_keys, "string", messages.wrong_table_type_validator, "string", "claim_keys")
+
+  return function(val, claim, jwt_json, payload)
+    -- called directly, without a payload: use the jwt object given for "__jwt"
+    if payload == nil and type(val) == "table" then
+      payload = val.payload
+    end
+    ensure_is_type(payload, "table", messages.wrong_type_claim, "payload", "table")
+
+    for _, v in ipairs(claim_keys) do
+      if payload[v] == nil then
+        error(string.format(messages.required_claim, v), 0)
+      end
+    end
+    return true
+  end
+end
 
 
 --[[
