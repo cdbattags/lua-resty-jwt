@@ -7,10 +7,9 @@ source = {
 description = {
   summary = 'JWT for ngx_lua and LuaJIT.',
   detailed = [[
-    This library requires an nginx build
-    with OpenSSL, the ngx_lua module,
-    the LuaJIT 2.0, the lua-resty-hmac,
-    and the lua-resty-string,
+    JWS and JWE (JWT) signing, verification, encryption and decryption
+    for OpenResty. Requires OpenResty (ngx_lua and LuaJIT) built with
+    OpenSSL, and lua-resty-openssl.
   ]],
   homepage = 'https://github.com/cdbattags/lua-resty-jwt',
   license = 'Apache License Version 2'
