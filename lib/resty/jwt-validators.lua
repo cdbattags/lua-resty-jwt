@@ -177,6 +177,25 @@ local function ensure_is_table_type(v, t, e, ...)
   return v
 end
 
+-- Local function to make sure that a value is a non-empty list of the given
+-- type.  Validators read only the list entries, so a table with other keys
+-- (e.g. a set {JWT=true}) would be silently ignored and is refused instead.
+local function ensure_is_list(v, t, name)
+  ensure_is_table(v, messages.empty_table_validator, name)
+  ensure_is_table_type(v, t, messages.wrong_table_type_validator, t, name)
+  local n = 0
+  for _ in ipairs(v) do
+    n = n + 1
+  end
+  for _ in pairs(v) do
+    n = n - 1
+  end
+  if n ~= 0 then
+    error(string.format(messages.wrong_table_type_validator, t, name), 0)
+  end
+  return v
+end
+
 -- Local function to ensure that a number is non-negative (positive or 0)
 local function ensure_is_non_negative(v, e, ...)
   if v ~= nil then
@@ -561,7 +580,7 @@ end)
     Returns a validator for the "aud" claim (RFC 7519 section 4.1.3).  The
     claim may be a single string or an array of strings, and passes if *any* of
     its values is one of the allowed audiences.  The value of audiences must be
-    a string or a non-empty table of strings.  An "aud" that is neither a
+    a string or a non-empty list of strings.  An "aud" that is neither a
     string nor an array of strings fails.
 ]]--
 define_validator("audience", function(audiences)
@@ -570,8 +589,7 @@ define_validator("audience", function(audiences)
   end
   ensure_not_nil(audiences, messages.nil_validator, "audiences")
   ensure_is_type(audiences, "table", messages.wrong_type_validator, "string or table", "audiences")
-  ensure_is_table(audiences, messages.empty_table_validator, "audiences")
-  ensure_is_table_type(audiences, "string", messages.wrong_table_type_validator, "string", "audiences")
+  ensure_is_list(audiences, "string", "audiences")
 
   local allowed = {}
   for _, v in ipairs(audiences) do
@@ -673,15 +691,14 @@ end)
     Returns a validator which errors with a message if *ANY* of the given claim
     keys is missing from the payload.  It checks the whole payload, so attach
     it to the "__jwt" claim, e.g. { __jwt = required_claims({ "sub", "iss" }) }.
-    The claim_keys must be a non-empty table of strings.
+    The claim_keys must be a non-empty list of strings.
 ]]--
 ---@param claim_keys string[]
 ---@return resty.jwt.validator
 function _M.required_claims(claim_keys)
   ensure_not_nil(claim_keys, messages.nil_validator, "claim_keys")
   ensure_is_type(claim_keys, "table", messages.wrong_type_validator, "table", "claim_keys")
-  ensure_is_table(claim_keys, messages.empty_table_validator, "claim_keys")
-  ensure_is_table_type(claim_keys, "string", messages.wrong_table_type_validator, "string", "claim_keys")
+  ensure_is_list(claim_keys, "string", "claim_keys")
 
   return payload_only(function(val, claim, jwt_json, payload)
     -- called directly, without a payload: use the jwt object given for "__jwt"
@@ -721,7 +738,7 @@ end
 --[[
     Returns a validator for the "typ" *header* that checks it is (one of) the
     given type(s), compared with normalize_typ (so "application/at+jwt" equals
-    "at+jwt").  The value of expected must be a string or a non-empty table of
+    "at+jwt").  The value of expected must be a string or a non-empty list of
     strings.  Use it in a claim spec's "__header" table, e.g.
       { __header = { typ = validators.typ_is("at+jwt") } }
     The opt_ version passes when the header has no "typ".
@@ -734,21 +751,11 @@ function _M.opt_typ_is(expected)
   end
   ensure_not_nil(expected, messages.nil_validator, "expected")
   ensure_is_type(expected, "table", messages.wrong_type_validator, "string or table", "expected")
-  ensure_is_table(expected, messages.empty_table_validator, "expected")
-  ensure_is_table_type(expected, "string", messages.wrong_table_type_validator, "string", "expected")
+  ensure_is_list(expected, "string", "expected")
 
-  -- only list entries are read, so a table with other keys (e.g. a set
-  -- {JWT=true}) would make a validator that rejects every token
-  local accepted, n = {}, 0
+  local accepted = {}
   for _, v in ipairs(expected) do
     accepted[_M.normalize_typ(v)] = true
-    n = n + 1
-  end
-  for _ in pairs(expected) do
-    n = n - 1
-  end
-  if n ~= 0 then
-    error(string.format(messages.wrong_table_type_validator, "string", "expected"), 0)
   end
   return builtin(function(val, claim, jwt_json)
     if val == nil then return true end

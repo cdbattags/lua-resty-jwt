@@ -130,6 +130,10 @@ pattern mismatch: false 'aud' claim does not contain an allowed audience.
             build_error("number", validators.opt_audience, 42)
             build_error("empty", validators.audience, {})
             build_error("non-string entry", validators.audience, {"api", 1})
+            -- only list entries would be read: a set or a mixed table is refused
+            build_error("set", validators.audience, {api=true})
+            build_error("mixed", validators.opt_audience, {"api", web="web"})
+            build_error("holes", validators.audience, {[1]="api", [3]="web"})
             build_error("ok", validators.audience, {"api"})
         }
     }
@@ -140,6 +144,9 @@ nil: Cannot create validator for nil audiences.
 number: Cannot create validator for non-string or table audiences.
 empty: Cannot create validator for empty table audiences.
 non-string entry: Cannot create validator for non-string table audiences.
+set: Cannot create validator for non-string table audiences.
+mixed: Cannot create validator for non-string table audiences.
+holes: Cannot create validator for non-string table audiences.
 ok: built
 --- no_error_log
 [error]
@@ -461,6 +468,9 @@ valid: true calls=1
             build_error("empty", validators.required_claims, {})
             build_error("non-string", validators.required_claims, {"sub", 1})
             build_error("string", validators.required_claims, "sub")
+            -- a set like {exp=true} would otherwise require nothing at all
+            build_error("set", validators.required_claims, {exp=true})
+            build_error("mixed", validators.required_claims, {"sub", exp=true})
         }
     }
 --- request
@@ -475,6 +485,8 @@ nil: Cannot create validator for nil claim_keys.
 empty: Cannot create validator for empty table claim_keys.
 non-string: Cannot create validator for non-string table claim_keys.
 string: Cannot create validator for non-table claim_keys.
+set: Cannot create validator for non-string table claim_keys.
+mixed: Cannot create validator for non-string table claim_keys.
 --- no_error_log
 [error]
 
@@ -681,7 +693,7 @@ legacy spec: true everything is awesome~ :p
             local token = hs_token({sub="x"})
             local bad = {
                 {issuer=1}, {issuer={}}, {issuer={"a", 2}},
-                {audience=true}, {audience={}},
+                {audience=true}, {audience={}}, {audience={api=true}}, {audience={"api", web="web"}},
                 {max_age=-1}, {max_age="60"},
                 {required_claims="sub"}, {required_claims={}}, {required_claims={"sub", 1}},
                 {typ=5}, {jti="hook"},
@@ -701,6 +713,8 @@ false verify_with: options.issuer must be a string or a non-empty list of string
 false verify_with: options.issuer must be a string or a non-empty list of strings
 false verify_with: options.audience must be a string or a non-empty list of strings
 false verify_with: options.audience must be a string or a non-empty list of strings
+false verify_with: options.audience must be a string or a non-empty list of strings
+false Cannot create validator for non-string table audiences.
 false verify_with: options.max_age must be a non-negative number of seconds
 false verify_with: options.max_age must be a non-negative number of seconds
 false verify_with: options.required_claims must be a non-empty list of claim names

@@ -749,7 +749,7 @@ local jwt_obj = jwt:verify(key, token,
 
 #### `validators.required_claims(claim_keys)` ####
 
-Returns a validator which errors with `'<name>' claim is required.` if *ANY* of the given claim keys is missing from the payload.  It checks the whole payload, so attach it to the `__jwt` claim: `{ __jwt = validators.required_claims({ "sub", "iss" }) }`.  The `claim_keys` must be a non-empty table of strings.  A claim whose value is JSON `null` counts as present.
+Returns a validator which errors with `'<name>' claim is required.` if *ANY* of the given claim keys is missing from the payload.  It checks the whole payload, so attach it to the `__jwt` claim: `{ __jwt = validators.required_claims({ "sub", "iss" }) }`.  The `claim_keys` must be a non-empty list of strings; any other table (such as the set `{ sub = true }`) raises when the validator is created.  A claim whose value is JSON `null` counts as present.
 
 #### `validators.typ_is(expected)` (opt) ####
 
