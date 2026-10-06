@@ -23,6 +23,7 @@ build = {
   type = 'builtin',
   modules = {
     ['resty.jwt'] = 'lib/resty/jwt.lua',
+    ['resty.jwt.jwk'] = 'lib/resty/jwt/jwk.lua',
     ['resty.evp'] = 'lib/resty/evp.lua',
     ['resty.jwt-validators'] = 'lib/resty/jwt-validators.lua',
     ['resty.jwt-zlib'] = 'lib/resty/jwt-zlib.lua',
