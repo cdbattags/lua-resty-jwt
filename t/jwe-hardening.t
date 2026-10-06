@@ -463,3 +463,106 @@ load_jwt: whitelist unsupported alg: dir
 no whitelist: true
 --- no_error_log
 [error]
+
+
+
+=== TEST 10: PBES2 p2c outside [1000, max] and short p2s are rejected before PBKDF2
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local rest = "." .. jwt:jwt_encode(string.rep("\0", 24))
+                      .. "." .. jwt:jwt_encode(string.rep("\0", 12))
+                      .. "." .. jwt:jwt_encode("ciphertext")
+                      .. "." .. jwt:jwt_encode(string.rep("\0", 16))
+            local salt16 = '"' .. jwt:jwt_encode(string.rep("s", 16)) .. '"'
+            local function token(p2c, p2s)
+                local h = '{"alg":"PBES2-HS256+A128KW","enc":"A128GCM"'
+                if p2c then h = h .. ',"p2c":' .. p2c end
+                if p2s then h = h .. ',"p2s":' .. p2s end
+                return jwt:jwt_encode(h .. "}") .. rest
+            end
+            local cases = {
+                { "p2c=10^9", token("1000000000", salt16) },
+                { "p2c=310001", token("310001", salt16) },
+                { "p2c=999", token("999", salt16) },
+                { "p2c=0", token("0", salt16) },
+                { "p2c=-5000", token("-5000", salt16) },
+                { "p2c=4096.5", token("4096.5", salt16) },
+                { "p2c=\"4096\"", token('"4096"', salt16) },
+                { "p2c=1e999", token("1e999", salt16) },
+                { "p2c missing", token(nil, salt16) },
+                { "p2s missing", token("4096", nil) },
+                { "p2s 7 bytes", token("4096", '"' .. jwt:jwt_encode("1234567") .. '"') },
+                { "p2s empty", token("4096", '""') },
+                { "p2s number", token("4096", "12345678") },
+                -- within bounds: reaches PBKDF2 and fails only at key unwrap
+                { "p2c=1000 p2s 8 bytes", token("1000", '"' .. jwt:jwt_encode("12345678") .. '"') },
+                { "p2c=310000", token("310000", salt16) },
+            }
+            for _, c in ipairs(cases) do
+                local obj = jwt:verify("password", c[2])
+                ngx.say(c[1], ": ", obj.verified, " ", obj.reason)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+p2c=10^9: false p2c out of acceptable bounds in header for PBES2
+p2c=310001: false p2c out of acceptable bounds in header for PBES2
+p2c=999: false p2c out of acceptable bounds in header for PBES2
+p2c=0: false p2c out of acceptable bounds in header for PBES2
+p2c=-5000: false p2c out of acceptable bounds in header for PBES2
+p2c=4096.5: false invalid p2c in header for PBES2
+p2c="4096": false invalid p2c in header for PBES2
+p2c=1e999: false p2c out of acceptable bounds in header for PBES2
+p2c missing: false missing p2s/p2c in header for PBES2
+p2s missing: false missing p2s/p2c in header for PBES2
+p2s 7 bytes: false invalid p2s in header for PBES2
+p2s empty: false invalid p2s in header for PBES2
+p2s number: false invalid p2s in header for PBES2
+p2c=1000 p2s 8 bytes: false failed to decrypt JWE
+p2c=310000: false failed to decrypt JWE
+--- no_error_log
+[error]
+
+
+
+=== TEST 11: jwt:set_pbes2_max_count adjusts the cap and validates its argument
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local token = jwt:sign("secret", {
+                header = { alg = "PBES2-HS512+A256KW", enc = "A256GCM" },
+                payload = { foo = "bar" },
+            })
+            ngx.say("default: ", jwt:verify("secret", token).verified)
+            jwt:set_pbes2_max_count(2000)
+            ngx.say("cap 2000: ", jwt:verify("secret", token).reason)
+            jwt:set_pbes2_max_count(4096)
+            ngx.say("cap 4096: ", jwt:verify("secret", token).verified)
+            for _, bad in ipairs({ 999, 1500.5, "5000", true }) do
+                local ok, err = pcall(jwt.set_pbes2_max_count, jwt, bad)
+                ngx.say("set ", tostring(bad), ": ", ok, " ", err)
+            end
+            jwt:set_pbes2_max_count(nil)
+            ngx.say("reset: ", jwt:verify("secret", token).verified)
+        }
+    }
+--- request
+GET /t
+--- response_body
+default: true
+cap 2000: p2c out of acceptable bounds in header for PBES2
+cap 4096: true
+set 999: false 'max_count' is expected to be an integer >= 1000
+set 1500.5: false 'max_count' is expected to be an integer >= 1000
+set 5000: false 'max_count' is expected to be an integer >= 1000
+set true: false 'max_count' is expected to be an integer >= 1000
+reset: true
+--- no_error_log
+[error]

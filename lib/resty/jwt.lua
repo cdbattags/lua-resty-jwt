@@ -22,6 +22,7 @@ local string_format = string.format
 local string_sub = string.sub
 local string_char = string.char
 local string_byte = string.byte
+local math_floor = math.floor
 local table_concat = table.concat
 local ngx_encode_base64 = ngx.encode_base64
 local ngx_decode_base64 = ngx.decode_base64
@@ -344,6 +345,16 @@ local pbes2_config = {
     ["PBES2-HS384+A192KW"] = { md = "sha384", keylen = 24 },
     ["PBES2-HS512+A256KW"] = { md = "sha512", keylen = 32 },
 }
+
+-- PBES2 "p2c" bounds. RFC 7518 4.8.1.2 recommends a minimum of 1000. The
+-- count is attacker controlled and PBKDF2 runs synchronously in the nginx
+-- worker, so the upper bound caps the CPU one token can burn; adjustable with
+-- jwt:set_pbes2_max_count(). 310000 is the OWASP PBKDF2-HMAC-SHA256 figure;
+-- for comparison panva/jose defaults to 10000 and go-jose hard-caps 1000000.
+local PBES2_MIN_COUNT = 1000
+local PBES2_DEFAULT_MAX_COUNT = 310000
+-- RFC 7518 4.8.1.1: the salt input must be at least 8 octets
+local PBES2_MIN_SALT_LEN = 8
 
 local function pbes2_derive_kek(alg, password, p2s_raw, p2c)
     local cfg = pbes2_config[alg]
@@ -695,10 +706,20 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     if not preshared_key then
         error({reason="password must not be null"})
     end
-    local p2s = header.p2s and _M:jwt_decode(header.p2s)
     local p2c = header.p2c
-    if not p2s or not p2c then
+    if header.p2s == nil or p2c == nil then
         error({reason="missing p2s/p2c in header for PBES2"})
+    end
+    if type(p2c) ~= str_const.number or p2c ~= math_floor(p2c) then
+        error({reason="invalid p2c in header for PBES2"})
+    end
+    local max_count = self and self.pbes2_max_count or PBES2_DEFAULT_MAX_COUNT
+    if p2c < PBES2_MIN_COUNT or p2c > max_count then
+        error({reason="p2c out of acceptable bounds in header for PBES2"})
+    end
+    local p2s = type(header.p2s) == str_const.string and _M:jwt_decode(header.p2s)
+    if not p2s or #p2s < PBES2_MIN_SALT_LEN then
+        error({reason="invalid p2s in header for PBES2"})
     end
     local kek = pbes2_derive_kek(alg, preshared_key, p2s, p2c)
     local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
@@ -880,6 +901,22 @@ function _M.set_alg_whitelist(self, algorithms)
 end
 
 _M.alg_whitelist = nil
+
+--- Set the maximum PBES2 iteration count ("p2c") accepted when decrypting
+-- PBES2-HS*+A*KW tokens. The count comes from the (unauthenticated) token
+-- header and every iteration costs worker CPU, so tokens above the cap are
+-- rejected before PBKDF2 runs. Counts below 1000 are always rejected.
+--
+-- @param max_count - integer >= 1000, or nil to restore the default (310000)
+function _M.set_pbes2_max_count(self, max_count)
+  if max_count ~= nil and (type(max_count) ~= str_const.number
+      or max_count ~= math_floor(max_count) or max_count < PBES2_MIN_COUNT) then
+    error("'max_count' is expected to be an integer >= " .. PBES2_MIN_COUNT, 0)
+  end
+  self.pbes2_max_count = max_count
+end
+
+_M.pbes2_max_count = nil
 
 
 --- Returns the list of default validations that will be
