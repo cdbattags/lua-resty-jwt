@@ -31,6 +31,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
 * [Methods](#methods)
     * [sign](#sign)
     * [verify](#verify)
+    * [verify_with](#verify_with)
     * [load and verify](#load--verify)
     * [set_alg_whitelist](#set_alg_whitelist)
     * [set_trusted_certs_file](#set_trusted_certs_file)
@@ -136,6 +137,36 @@ The `alg` argument specifies which signing algorithm to use (`HS256`, `HS512`, `
 verify a jwt_token and returns a jwt_obj table.  `key` can be a pre-shared key (as a string), *or* a function which takes a single parameter (the value of `kid` from the header) and returns either the pre-shared key (as a string) for the `kid` or `nil` if the `kid` lookup failed.  This call will fail if you try to specify a function for `key` and there is no `kid` existing in the header.
 
 See [Verification](#verification) for details on the format of `claim_spec` parameters.
+
+The signature is always checked before any `claim_spec` is evaluated, so validators only ever see authenticated claims, and a bad signature is reported in preference to a failing claim.
+
+The key must fit the token's `alg`:
+
+* `HS256`/`HS384`/`HS512`: a shared secret. Secrets containing PEM key material (`-----BEGIN`) are rejected, which prevents the RS/HS key-confusion attack where a token is MACed with a server's *public* key.
+* `RS*`/`PS*`: an RSA public key or certificate (PEM).
+* `ES256`/`ES384`/`ES512`: an EC public key or certificate on P-256/P-384/P-521 respectively.
+* `Ed25519`/`Ed448`/`EdDSA`: the matching OKP public key or certificate (`EdDSA` accepts either).
+
+Otherwise verification fails with `key type mismatch: ...`. Even so, prefer pinning the algorithms you expect with [verify_with](#verify_with) or [set_alg_whitelist](#set_alg_whitelist).
+
+## verify_with
+
+`syntax: local jwt_obj = jwt:verify_with(key, jwt_token, options)`
+
+Like `verify`, but takes an options table that pins the algorithms accepted for this call:
+
+* `algorithms` (required): list of allowed `alg` header values, e.g. `{ "RS256", "ES256" }` (the `set_alg_whitelist` style `{ RS256 = 1 }` is accepted too).
+* `claim_specs` (optional): list of `claim_spec` tables, the same as the trailing arguments of `verify`.
+
+The `alg` is checked before the token is parsed, so a JWE using a disallowed key management algorithm is never decrypted. A global [set_alg_whitelist](#set_alg_whitelist) still applies as well. Invalid options raise an error.
+
+```lua
+local jwt_obj = jwt:verify_with(public_key, jwt_token, {
+    algorithms = { "RS256" },
+    claim_specs = { { iss = validators.equals("https://issuer.example") } },
+})
+-- an HS256 (or any non-RS256) token fails with "whitelist unsupported alg: HS256"
+```
 
 
 ## load & verify
@@ -334,30 +365,33 @@ Returns a validator that checks how a value compares (numerically, using `<`) to
 
 Returns a validator that checks how a value compares (numerically, using `<=`) to a given `check_value`.  The value of `check_val` cannot be `nil` and must be a number.
 
-#### `validators.is_not_before()` (opt) ####
+#### `validators.is_not_before(options)` (opt) ####
 
-Returns a validator that checks if the current time is not before the tested value within the system's leeway.  This means that:
+Returns a validator that checks if the current time is not before the tested value within the leeway.  This means that:
 ```
-val <= (system_clock() + system_leeway).
+val <= (system_clock() + leeway).
 ```
+The optional `options` table may set `{ leeway = seconds }` for this validator only; otherwise the system leeway is used.
 
-#### `validators.is_not_expired()` (opt) ####
+#### `validators.is_not_expired(options)` (opt) ####
 
-Returns a validator that checks if the current time is not equal to or after the tested value within the system's leeway.  This means that:
+Returns a validator that checks if the current time is not equal to or after the tested value within the leeway.  This means that:
 ```
-val > (system_clock() - system_leeway).
+val > (system_clock() - leeway).
 ```
+The optional `options` table may set `{ leeway = seconds }` for this validator only; otherwise the system leeway is used.
 
-#### `validators.is_at()` (opt) ####
+#### `validators.is_at(options)` (opt) ####
 
-Returns a validator that checks if the current time is the same as the tested value within the system's leeway.  This means that:
+Returns a validator that checks if the current time is the same as the tested value within the leeway.  This means that:
 ```
-val >= (system_clock() - system_leeway) and val <= (system_clock() + system_leeway).
+val >= (system_clock() - leeway) and val <= (system_clock() + leeway).
 ```
+The optional `options` table may set `{ leeway = seconds }` for this validator only; otherwise the system leeway is used.
 
 #### `validators.set_system_leeway(leeway)` ####
 
-A function to set the leeway (in seconds) used for `is_not_before` and `is_not_expired`.  The default is to use `0` seconds
+A function to set the default leeway (in seconds) used for `is_not_before`, `is_not_expired` and `is_at` when they are not given their own `leeway`.  The default is to use `0` seconds.  This is module-wide state for the whole worker.
 
 #### `validators.set_system_clock(clock)` ####
 
@@ -388,23 +422,20 @@ When using legacy `validation_options`, you *MUST ONLY* specify these options.  
 
     * `nbf` and `exp` claims are expected to be expressed in the jwt as numerical values. Wouldn't that be the case, verification will fail.
 
-    * Specifying this option is equivalent to calling:
-      ```
-      validators.set_system_leeway(leeway)
-      ```
+    * The leeway applies to this verification only; it does not change the system leeway.
 
-      and specifying as a `claim_spec`:
+    * Specifying this option is equivalent to specifying as a `claim_spec`:
       ```
       {
         __jwt = validators.require_one_of({ "nbf", "exp" }),
-        nbf = validators.opt_is_not_before(),
-        exp = validators.opt_is_not_expired()
+        nbf = validators.opt_is_not_before({ leeway = leeway }),
+        exp = validators.opt_is_not_expired({ leeway = leeway })
       }
       ```
 
 * `require_nbf_claim`: Express if the `nbf` claim is optional or not. Value should be a boolean.
 
-    * When this validation option is set to `true` and no `lifetime_grace_period` has been specified, a zero (`0`) leeway is implied.
+    * When this validation option is set to `true` and no `lifetime_grace_period` has been specified, the system leeway (`0` unless changed with `validators.set_system_leeway`) is used.
 
     * Specifying this option is equivalent to specifying as a `claim_spec`:
       ```
@@ -415,7 +446,7 @@ When using legacy `validation_options`, you *MUST ONLY* specify these options.  
 
 * `require_exp_claim`: Express if the `exp` claim is optional or not. Value should be a boolean.
 
-    * When this validation option is set to `true` and no `lifetime_grace_period` has been specified, a zero (`0`) leeway is implied.
+    * When this validation option is set to `true` and no `lifetime_grace_period` has been specified, the system leeway (`0` unless changed with `validators.set_system_leeway`) is used.
 
     * Specifying this option is equivalent to specifying as a `claim_spec`:
       ```

@@ -769,3 +769,120 @@ false leeway must be a non-negative number
 false Cannot create validator for non-table options.
 --- no_error_log
 [error]
+
+
+=== TEST 21: verify_with pins algorithms per call (key confusion rejected up front)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local pub = read_file("cert-pubkey.pem")
+            local rs = rs256_token({typ="JWT", alg="RS256"}, {sub="alice"})
+            local forged = hs_token(pub, {typ="JWT", alg="HS256"}, {sub="admin"})
+
+            local obj = jwt:verify_with(pub, rs, {algorithms={"RS256"}})
+            ngx.say("RS256 allowed: ", obj.verified, " ", obj.payload.sub)
+            obj = jwt:verify_with(pub, forged, {algorithms={"RS256"}})
+            ngx.say("HS256 forged: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify_with(pub, rs, {algorithms={"ES256", "PS256"}})
+            ngx.say("RS256 not allowed: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify_with(pub, rs, {algorithms={RS256=true}})
+            ngx.say("set form: ", obj.verified)
+            obj = jwt:verify_with(pub, make_token({typ="JWT"}, {sub="x"}), {algorithms={"RS256"}})
+            ngx.say("no alg: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify_with(pub, make_token({alg={"RS256"}}, {sub="x"}), {algorithms={"RS256"}})
+            ngx.say("table alg: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify_with(pub, "garbage", {algorithms={"RS256"}})
+            ngx.say("garbage: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify_with(pub, nil, {algorithms={"RS256"}})
+            ngx.say("nil token: ", obj.verified, " ", obj.reason)
+
+            -- claim specs are passed through and evaluated after the signature
+            obj = jwt:verify_with(pub, rs, {algorithms={"RS256"}, claim_specs={{sub=validators.equals("bob")}}})
+            ngx.say("claims: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify_with(pub, rs, {algorithms={"RS256"}, claim_specs={{sub=validators.equals("alice")}}})
+            ngx.say("claims ok: ", obj.verified)
+
+            -- global whitelist still applies on top
+            jwt:set_alg_whitelist({ES256=1})
+            obj = jwt:verify_with(pub, rs, {algorithms={"RS256"}})
+            ngx.say("global whitelist: ", obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+RS256 allowed: true alice
+HS256 forged: false whitelist unsupported alg: HS256
+RS256 not allowed: false whitelist unsupported alg: RS256
+set form: true
+no alg: false whitelist unsupported alg: nil
+table alg: false invalid alg: must be a string
+garbage: false invalid jwt string
+nil token: false invalid jwt string
+claims: false Claim 'sub' ('alice') returned failure
+claims ok: true
+global whitelist: false whitelist unsupported alg: RS256
+--- no_error_log
+[error]
+
+
+=== TEST 22: verify_with rejects a disallowed JWE alg before decrypting
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local key = "12341234123412341234123412341234"
+            local token = jwt:sign(key, {header={alg="dir", enc="A128CBC-HS256"}, payload={sub="alice"}})
+            local obj = jwt:verify_with(key, token, {algorithms={"dir"}})
+            ngx.say(obj.verified, " ", obj.payload.sub)
+            -- a key of the wrong size would fail decryption with "invalid pre-shared key";
+            -- the alg check must short-circuit before that
+            obj = jwt:verify_with("short", token, {algorithms={"RSA-OAEP-256"}})
+            ngx.say(obj.verified, " ", obj.reason)
+            obj = jwt:verify_with("short", token, {algorithms={"dir"}})
+            ngx.say(obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+true alice
+false whitelist unsupported alg: dir
+false invalid pre-shared key
+--- no_error_log
+[error]
+
+
+=== TEST 23: verify_with option errors are raised
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local token = jwt:sign("secret", {header={typ="JWT", alg="HS256"}, payload={}})
+            for _, opts in ipairs({"x", {}, {algorithms={}}, {algorithms="HS256"}, {algorithms={1}},
+                                   {algorithms={HS256=false}}, {algorithms={"HS256"}, claim_specs="x"}}) do
+                local ok, err = pcall(jwt.verify_with, jwt, "secret", token, opts)
+                ngx.say(ok, " ", err)
+            end
+            local obj = jwt:verify_with("secret", token, {algorithms={"HS256"}})
+            ngx.say(obj.verified)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false verify_with: options must be a table
+false verify_with: options.algorithms must be a non-empty list of algorithm names
+false verify_with: options.algorithms must be a non-empty list of algorithm names
+false verify_with: options.algorithms must be a non-empty list of algorithm names
+false verify_with: options.algorithms must be a non-empty list of algorithm names
+false verify_with: options.algorithms must be a non-empty list of algorithm names
+false verify_with: options.claim_specs must be a list of claim specs
+true
+--- no_error_log
+[error]

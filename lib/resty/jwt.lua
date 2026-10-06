@@ -1785,6 +1785,68 @@ function _M.verify(self, secret, jwt_str, ...)
 
 end
 
+local verify_with_algorithms_error =
+  "verify_with: options.algorithms must be a non-empty list of algorithm names"
+
+-- normalizes {"RS256", ...} (or the set_alg_whitelist style {RS256=1, ...})
+-- into a set of algorithm names
+local function get_allowed_algorithms(algorithms)
+  if type(algorithms) ~= str_const.table then
+    error(verify_with_algorithms_error, 0)
+  end
+  local allowed = {}
+  for k, v in pairs(algorithms) do
+    local name = type(k) == str_const.number and v or (v and k)
+    if type(name) ~= str_const.string then
+      error(verify_with_algorithms_error, 0)
+    end
+    allowed[name] = true
+  end
+  if next(allowed) == nil then
+    error(verify_with_algorithms_error, 0)
+  end
+  return allowed
+end
+
+--- Verify a JWS/JWE string, pinning the accepted algorithms for this call.
+--
+-- jwt:verify_with(secret, jwt_str, {
+--   algorithms = { "RS256", "ES256" },   -- required: allowed "alg" header values
+--   claim_specs = { spec1, spec2 },      -- optional: same as verify()'s varargs
+-- })
+--
+-- The alg is checked before the token is parsed, so a JWE using a
+-- disallowed key management algorithm is never decrypted. Applies in
+-- addition to set_alg_whitelist().
+function _M.verify_with(self, secret, jwt_str, options)
+  if type(options) ~= str_const.table then
+    error("verify_with: options must be a table", 0)
+  end
+  local allowed = get_allowed_algorithms(options.algorithms)
+  local claim_specs = options.claim_specs or {}
+  if type(claim_specs) ~= str_const.table then
+    error("verify_with: options.claim_specs must be a list of claim specs", 0)
+  end
+
+  if type(jwt_str) ~= str_const.string then
+    return {verified=false, reason=str_const.invalid_jwt}
+  end
+  local encoded_header = split_string(jwt_str, str_const.regex_split_dot)[1]
+  local header = encoded_header and _M:jwt_decode(encoded_header, true)
+  if type(header) == str_const.table then
+    local alg = header[str_const.alg]
+    if alg ~= nil and type(alg) ~= str_const.string then
+      return {verified=false, reason="invalid alg: must be a string"}
+    end
+    if not allowed[alg] then
+      return {verified=false, reason="whitelist unsupported alg: " .. tostring(alg)}
+    end
+  end
+  -- otherwise load_jwt reports the malformed header
+
+  return _M.verify(self, secret, jwt_str, unpack(claim_specs))
+end
+
 function _M.set_payload_encoder(self, encoder)
   if type(encoder) ~= "function" then
     error({reason="payload encoder must be function"})
