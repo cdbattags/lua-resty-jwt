@@ -756,7 +756,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
         end
         secret_key = aes_key_unwrap(derive_legacy_ecdh_kw_key(header, Z), wrapped_key)
     end
-    key, _, enc_key = derive_keys(header.enc, secret_key)
+    key, _, enc_key = derive_keys(header.enc, check_cek_len(enc, secret_key))
   elseif alg == str_const.A128KW or alg == str_const.A192KW or alg == str_const.A256KW then
     if not preshared_key then
         error({reason="AES key wrap key must not be null"})
