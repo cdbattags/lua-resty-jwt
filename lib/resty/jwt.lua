@@ -2385,6 +2385,27 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
   return jwt_obj
 end
 
+--- Validates claim specs against a jwt_obj that was already verified, e.g.
+-- to apply route-specific checks after a shared verify.
+--
+-- Only the "verified" flag guards this, so never pass an object that did
+-- not come out of verify/verify_jwt_obj/verify_with with verified == true:
+-- claims of an unverified token are attacker controlled.
+--@param jwt_obj a verified jwt object
+--@param ... claim specs (see jwt-validators.lua) or legacy validation options
+--@return true, or false and the reason. On failure jwt_obj.verified is set to
+-- false and jwt_obj.reason to the reason
+function _M.validate_claims(self, jwt_obj, ...)
+  if type(jwt_obj) ~= str_const.table or jwt_obj[str_const.verified] ~= true then
+    return false, "claims can only be validated on a verified token"
+  end
+  local claim_specs = prepare_claim_specs(self, jwt_obj, ...)
+  if not validate_claims(jwt_obj, claim_specs) then
+    jwt_obj[str_const.verified] = false
+    return false, jwt_obj[str_const.reason]
+  end
+  return true
+end
 
 function _M.verify(self, secret, jwt_str, ...)
   local jwt_obj = _M.load_jwt(self, jwt_str, secret)

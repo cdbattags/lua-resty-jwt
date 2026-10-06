@@ -737,3 +737,136 @@ false whitelist unsupported alg: HS256 calls=0
 false invalid jwt string calls=0
 --- no_error_log
 [error]
+
+
+=== TEST 21: validate_claims checks claim specs on a verified object
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local obj = jwt:verify("secret", hs_token({sub="alice", aud={"api"}, iat=990}))
+            ngx.say("verified: ", obj.verified)
+            ngx.say("pass: ", jwt:validate_claims(obj,
+                {aud=validators.audience("api")},
+                {iat=validators.issued_at({max_age=60})}))
+            ngx.say("still verified: ", obj.verified, " ", obj.reason)
+            ngx.say("fail: ", jwt:validate_claims(obj,
+                {sub=validators.equals("alice")}, {aud=validators.audience("web")}))
+            ngx.say("after failure: ", obj.verified, " ", obj.reason)
+            -- the object is no longer verified, so it is refused from now on
+            ngx.say("again: ", jwt:validate_claims(obj, {sub=validators.equals("alice")}))
+        }
+    }
+--- request
+GET /t
+--- response_body
+verified: true
+pass: true
+still verified: true everything is awesome~ :p
+fail: false'aud' claim does not contain an allowed audience.
+after failure: false 'aud' claim does not contain an allowed audience.
+again: falseclaims can only be validated on a verified token
+--- no_error_log
+[error]
+
+
+=== TEST 22: validate_claims refuses objects that were not verified
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local calls = 0
+            local spec = {jti=validators.jti_hook(function() calls = calls + 1 return true end)}
+            local token = hs_token({jti="a"})
+
+            local loaded = jwt:load_jwt(token)
+            ngx.say("loaded: ", jwt:validate_claims(loaded, spec))
+            ngx.say("loaded untouched: ", loaded.verified, " ", loaded.valid, " ", tostring(loaded.reason))
+            local bad = jwt:verify("secret", tamper(token))
+            ngx.say("bad signature: ", jwt:validate_claims(bad, spec))
+            local invalid = jwt:verify("secret", "garbage")
+            ngx.say("invalid: ", jwt:validate_claims(invalid, spec))
+            ngx.say("truthy flag: ", jwt:validate_claims({verified="true", payload={jti="a"}}, spec))
+            ngx.say("nil: ", jwt:validate_claims(nil, spec))
+            ngx.say("string: ", jwt:validate_claims(token, spec))
+            ngx.say("calls: ", calls)
+            local obj = jwt:verify("secret", token)
+            ngx.say("verified: ", jwt:validate_claims(obj, spec), " calls=", calls)
+        }
+    }
+--- request
+GET /t
+--- response_body
+loaded: falseclaims can only be validated on a verified token
+loaded untouched: false true nil
+bad signature: falseclaims can only be validated on a verified token
+invalid: falseclaims can only be validated on a verified token
+truthy flag: falseclaims can only be validated on a verified token
+nil: falseclaims can only be validated on a verified token
+string: falseclaims can only be validated on a verified token
+calls: 0
+verified: true calls=1
+--- no_error_log
+[error]
+
+
+=== TEST 23: validate_claims applies the default checks and rejects malformed specs
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            -- verified with a spec that skips the default exp check
+            local obj = jwt:verify("secret", hs_token({sub="x", exp=999}), {sub=validators.equals("x")})
+            ngx.say("verified: ", obj.verified)
+            ngx.say("defaults: ", jwt:validate_claims(obj))
+
+            obj = jwt:verify("secret", hs_token({sub="x", exp=999}), {sub=validators.equals("x")})
+            ngx.say("legacy: ", jwt:validate_claims(obj, {lifetime_grace_period=5}))
+            ngx.say("malformed: ", pcall(jwt.validate_claims, jwt, obj, {sub="x"}))
+            ngx.say("unchanged: ", obj.verified)
+        }
+    }
+--- request
+GET /t
+--- response_body
+verified: true
+defaults: false'exp' claim expired at Thu, 01 Jan 1970 00:16:39 GMT
+legacy: true
+malformed: falseClaim spec value must be a function - see jwt-validators.lua for helper functions
+unchanged: true
+--- no_error_log
+[error]
+
+
+=== TEST 24: validate_claims works on a verified JWE
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local key = string.rep("k", 32)
+            local token = jwt:sign(key, {
+                header = {alg="dir", enc="A256GCM"},
+                payload = {sub="alice", aud="api"},
+            })
+            local obj = jwt:verify(key, token)
+            ngx.say("verified: ", obj.verified)
+            ngx.say("aud: ", jwt:validate_claims(obj, {aud=validators.audience("api")}))
+            ngx.say("required: ", jwt:validate_claims(obj, {__jwt=validators.required_claims({"sub", "iss"})}))
+        }
+    }
+--- request
+GET /t
+--- response_body
+verified: true
+aud: true
+required: false'iss' claim is required.
+--- no_error_log
+[error]

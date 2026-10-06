@@ -34,6 +34,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [verify_with](#verify_with)
     * [Keys: PEM, JWK, JWK Set and key objects](#keys-pem-jwk-jwk-set-and-key-objects)
     * [load and verify](#load--verify)
+    * [validate_claims](#validate_claims)
     * [set_alg_whitelist](#set_alg_whitelist)
     * [set_typ_whitelist](#set_typ_whitelist)
     * [set_crit_whitelist](#set_crit_whitelist)
@@ -283,6 +284,23 @@ load jwt, check for kid, then verify it with the correct key
     "valid": true,
     "reason": "signature mismatched: wrong-signature"
 }
+```
+
+## validate_claims
+
+`syntax: local ok, reason = jwt:validate_claims(jwt_obj [, claim_spec [, ...]])`
+
+Runs `claim_spec` tables (see [Verification](#verification)) against a `jwt_obj` that has *already been verified*, for example to add route-specific checks after a shared `verify`. Returns `true`, or `false` and the reason; on failure it also sets `jwt_obj.verified` to `false` and `jwt_obj.reason` to the reason. Without any `claim_spec`, the default `exp`/`nbf` checks of `verify` apply.
+
+It refuses to run on an object whose `verified` field is not `true` and returns `false, "claims can only be validated on a verified token"`, so a `jwt_obj` from `load_jwt`, or one whose signature failed, is never validated.
+
+**Warning:** that `verified` flag is all it checks. Only pass objects returned by `verify`, `verify_with` or `verify_jwt_obj`, and never one built or modified from request data: the claims of an unverified token are attacker controlled.
+
+```lua
+local jwt_obj = jwt:verify_with(key, token, { algorithms = { "RS256" }, issuer = "https://issuer.example" })
+if jwt_obj.verified then
+    local ok, reason = jwt:validate_claims(jwt_obj, { scope = validators.matches("admin") })
+end
 ```
 
 ## set_alg_whitelist
