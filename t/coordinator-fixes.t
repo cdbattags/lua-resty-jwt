@@ -114,3 +114,34 @@ true instance
 bar
 --- no_error_log
 [error]
+
+
+
+=== TEST 5: ES* signing refuses a key on the wrong curve
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function read(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local c = f:read("*a"); f:close(); return c
+            end
+            local p256 = read("ec_cert-key.pem")
+            local p384 = read("ec_cert_p384-key.pem")
+            local ok, err = pcall(jwt.sign, jwt, p384, { header = { typ = "JWT", alg = "ES256" }, payload = { foo = "bar" } })
+            ngx.say("ES256 with P-384: ", tostring(ok), " ", ok and "" or err.reason)
+            local token = jwt:sign(p256, { header = { typ = "JWT", alg = "ES256" }, payload = { foo = "bar" } })
+            ngx.say("ES256 with P-256: ", tostring(jwt:verify(read("ec_cert_pubkey.pem"), token).verified))
+            local t384 = jwt:sign(p384, { header = { typ = "JWT", alg = "ES384" }, payload = { foo = "bar" } })
+            ngx.say("ES384 with P-384: ", tostring(jwt:verify(read("ec_cert_p384_pubkey.pem"), t384).verified))
+        }
+    }
+--- request
+GET /t
+--- response_body
+ES256 with P-384: false key type mismatch: alg ES256 requires an EC P-256 key
+ES256 with P-256: true
+ES384 with P-384: true
+--- no_error_log
+[error]

@@ -51,7 +51,8 @@ Verification and keys:
   asymmetric JWKs or key objects are rejected for HMAC, when signing and when verifying.
 - Algorithms are bound to key types: RS*/PS* require RSA, ES256/384/512 require
   P-256/P-384/P-521, Ed25519/Ed448 require the matching OKP key and EdDSA either one.
-  Mismatches fail with `key type mismatch: …`.
+  Mismatches fail with `key type mismatch: …`. Signing with ES256/384/512 also requires
+  the matching curve, so the library no longer produces mislabeled tokens.
 - Signatures (and JWE authentication) are verified **before** claims are validated. A
   signature failure always wins. Validators receive `jwt_json` with `verified=true` and
   no JWE internals.

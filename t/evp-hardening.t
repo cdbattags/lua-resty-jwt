@@ -197,7 +197,7 @@ PS256 false true
 [error]
 
 
-=== TEST 8: ES256 signing with an RSA private key returns a signer error
+=== TEST 8: ES256 signing with an RSA private key is refused (key type mismatch)
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -208,7 +208,7 @@ PS256 false true
                 local ok, err = pcall(jwt.sign, jwt, h.cert(name),
                     { header = { typ = "JWT", alg = "ES256" }, payload = { foo = "bar" } })
                 ngx.say(ok, " ", type(err) == "table"
-                    and err.reason:match("^signer error: ") ~= nil)
+                    and err.reason:match("^key type mismatch: alg ES256 requires an EC P%-256 key") ~= nil)
             end
         }
     }

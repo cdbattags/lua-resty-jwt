@@ -1984,6 +1984,13 @@ function _M.sign(self, secret_key, jwt_obj)
       error({reason="signature error: " .. (err or "")})
     end
   elseif alg == str_const.ES256 or alg == str_const.ES384 or alg == str_const.ES512 then
+    -- the key's curve must match the alg (ES256: P-256, ...), or the token
+    -- would be mislabeled and no conforming verifier would accept it
+    local pk = type(secret_key) == str_const.string and pkey.new(secret_key)
+    local key_err = pk and check_key_type(alg, pk)
+    if key_err then
+      error({reason=key_err})
+    end
     local signer, err = evp.ECSigner:new(secret_key)
     if not signer then
       error({reason="signer error: " .. (err or "")})
