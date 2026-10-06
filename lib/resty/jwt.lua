@@ -176,7 +176,8 @@ local function get_raw_part(part_name, jwt_obj)
 end
 
 
--- key length in bits for Concat KDF (GCM modes only for ECDH-ES direct agreement)
+-- CEK length in bits per "enc". Also the RFC 7518 Section 4.6.2 Concat KDF
+-- keydatalen for ECDH-ES direct key agreement, which derives the CEK itself
 local keydatalen_map = {
   [str_const.A128GCM] = 128,
   [str_const.A192GCM] = 192,
@@ -184,78 +185,175 @@ local keydatalen_map = {
   [str_const.A128CBC_HS256] = 256,
   [str_const.A192CBC_HS384] = 384,
   [str_const.A256CBC_HS512] = 512,
-  [str_const.A128KW] = 128,
-  [str_const.A192KW] = 192,
-  [str_const.A256KW] = 256,
 }
 
--- OpenSSL NID -> curve name for EC key generation
-local ec_nid_to_curve = {
-  [415] = "prime256v1",
-  [714] = "secp256k1",
-  [715] = "secp384r1",
-  [716] = "secp521r1",
+-- ECDH-ES+A*KW derives the key wrapping key, so keydatalen is the AES-KW key size
+local ecdh_es_kw_keydatalen = {
+  [str_const.ECDH_ES_A128KW] = 128,
+  [str_const.ECDH_ES_A192KW] = 192,
+  [str_const.ECDH_ES_A256KW] = 256,
 }
 
--- RFC 7518 Section 4.6.2 - Concat KDF (multi-round SHA-256)
--- reps = ceil(keydatalen / hashlen); hashlen = 256 for SHA-256
+-- Curves allowed for ECDH-ES (RFC 7518 Section 6.2.1.1): OpenSSL NID -> curve names
+local ecdh_curves_by_nid = {
+  [415] = { openssl = "prime256v1", jwk = "P-256" },
+  [715] = { openssl = "secp384r1", jwk = "P-384" },
+  [716] = { openssl = "secp521r1", jwk = "P-521" },
+}
+
+local ecdh_nid_by_crv = {}
+for nid, curve in pairs(ecdh_curves_by_nid) do
+  ecdh_nid_by_crv[curve.jwk] = nid
+end
+
+-- strict base64url (RFC 7515 Section 2): URL-safe alphabet, no padding
+local function decode_base64url_strict(value)
+  if type(value) ~= str_const.string or value:find("[^%w%-_]") or #value % 4 == 1 then
+    return nil
+  end
+  return _M:jwt_decode(value)
+end
+
+-- "apu"/"apv" carry the base64url encoded PartyUInfo/PartyVInfo; absent means empty
+local function decode_party_info(header, name)
+  local value = header[name]
+  if value == nil then
+    return str_const.empty
+  end
+  local decoded = decode_base64url_strict(value)
+  if not decoded then
+    error({reason="invalid " .. name .. " in JWE header"})
+  end
+  return decoded
+end
+
+-- RFC 7518 Section 4.6.2: AlgorithmID is the "enc" value for ECDH-ES direct key
+-- agreement and the "alg" value (e.g. "ECDH-ES+A128KW") when the derived key is
+-- used to wrap the CEK.
 local function derive_shared_key(header, shared_secret_Z)
-    local enc = header.enc
-    local keydatalen = keydatalen_map[enc]
+    local alg = header.alg
+    local algorithm_id, keydatalen
+    if alg == str_const.ECDH_ES then
+        algorithm_id = header.enc
+        keydatalen = keydatalen_map[algorithm_id]
+    else
+        algorithm_id = alg
+        keydatalen = ecdh_es_kw_keydatalen[alg]
+    end
     if not keydatalen then
-        error({reason="unsupported enc for ECDH-ES key derivation: " .. enc})
+        error({reason="unsupported algorithm for ECDH-ES key derivation: " .. tostring(algorithm_id)})
     end
 
-    local other_info = {}
-    utils.append_array(other_info, utils.get_octet_sequence(enc))
+    return utils.concat_kdf(shared_secret_Z, algorithm_id, keydatalen,
+        decode_party_info(header, "apu"), decode_party_info(header, "apv"))
+end
 
-    local empty_octet = utils.integer_to_32_bit_big_endian(0)
-    local party_u = empty_octet
-    if header.apu then
-        local apu_decoded = ngx_decode_base64(header.apu)
-        if apu_decoded then
-            party_u = utils.get_octet_sequence(apu_decoded)
-        end
+-- DEPRECATED, to be removed in 1.0 together with set_legacy_ecdh_kw_kdf.
+-- v0.3.0 - v0.3.2 derived the ECDH-ES+A*KW key wrapping key with AlgorithmID
+-- "A128KW"/"A192KW"/"A256KW" and decoded apu/apv as standard base64, silently
+-- ignoring values that failed to decode. Only ever used to decrypt.
+local legacy_ecdh_kw_algorithm_id = {
+  [str_const.ECDH_ES_A128KW] = str_const.A128KW,
+  [str_const.ECDH_ES_A192KW] = str_const.A192KW,
+  [str_const.ECDH_ES_A256KW] = str_const.A256KW,
+}
+
+local function derive_legacy_ecdh_kw_key(header, shared_secret_Z)
+    local alg = header.alg
+    local apu = type(header.apu) == str_const.string and ngx_decode_base64(header.apu) or str_const.empty
+    local apv = type(header.apv) == str_const.string and ngx_decode_base64(header.apv) or str_const.empty
+    return utils.concat_kdf(shared_secret_Z, legacy_ecdh_kw_algorithm_id[alg],
+        ecdh_es_kw_keydatalen[alg], apu, apv)
+end
+
+--- DEPRECATED, to be removed in 1.0.
+-- Also accept ECDH-ES+A128KW/A192KW/A256KW tokens produced by lua-resty-jwt
+-- v0.3.0 - v0.3.2, which used a non-standard Concat KDF (see
+-- derive_legacy_ecdh_kw_key). When enabled, decryption tries the RFC 7518
+-- derivation first and falls back to the legacy one. Signing always produces
+-- RFC 7518 tokens. Disabled by default.
+function _M.set_legacy_ecdh_kw_kdf(self, enabled)
+  self.legacy_ecdh_kw_kdf = enabled and true or false
+end
+
+_M.legacy_ecdh_kw_kdf = false
+
+-- RFC 7518 Section 4.6: validate the ephemeral public key ("epk") against the
+-- recipient's EC private key and compute the ECDH shared secret Z
+local function ecdh_es_shared_secret(header, private_key_pem)
+    if not private_key_pem then
+        error({reason="EC private key must not be null"})
     end
-    utils.append_array(other_info, party_u)
-
-    local party_v = empty_octet
-    if header.apv then
-        local apv_decoded = ngx_decode_base64(header.apv)
-        if apv_decoded then
-            party_v = utils.get_octet_sequence(apv_decoded)
-        end
+    local epk_jwk = header.epk
+    if type(epk_jwk) ~= str_const.table then
+        error({reason="missing epk in JWE header"})
     end
-    utils.append_array(other_info, party_v)
-
-    utils.append_array(other_info, utils.integer_to_32_bit_big_endian(keydatalen))
-
-    local hashlen = 256
-    local reps = math.ceil(keydatalen / hashlen)
-    local z_bytes = utils.string_to_byte_array(shared_secret_Z)
-    local derived = {}
-
-    for round = 1, reps do
-        local counter = utils.integer_to_32_bit_big_endian(round)
-        local round_concat = {}
-        utils.append_array(round_concat, counter)
-        utils.append_array(round_concat, z_bytes)
-        utils.append_array(round_concat, other_info)
-
-        local input = string_char(unpack(round_concat))
-        local d, err = digest.new("SHA256")
-        if not d then
-            error({reason="failed to create SHA256 digest: " .. (err or "")})
-        end
-        local md, hash_err = d:final(input)
-        if not md then
-            error({reason="failed to compute KDF hash: " .. (hash_err or "")})
-        end
-        derived[round] = md
+    if epk_jwk.kty ~= "EC" then
+        error({reason="unsupported epk key type"})
+    end
+    local epk_nid = ecdh_nid_by_crv[epk_jwk.crv]
+    if not epk_nid then
+        error({reason="unsupported epk curve"})
+    end
+    if epk_jwk.d ~= nil then
+        error({reason="epk must not contain a private key"})
+    end
+    if type(epk_jwk.x) ~= str_const.string or type(epk_jwk.y) ~= str_const.string then
+        error({reason="invalid epk in JWE header"})
     end
 
-    local full = table_concat(derived)
-    return string_sub(full, 1, keydatalen / 8)
+    local private_key, priv_err = pkey.new(private_key_pem)
+    if not private_key then
+        error({reason="failed to load EC private key: " .. (priv_err or "")})
+    end
+    local params = private_key:is_private() and private_key:get_parameters()
+    if not params or not params.group then
+        error({reason="ECDH-ES requires an EC private key"})
+    end
+    if params.group ~= epk_nid then
+        error({reason="epk curve does not match the EC private key"})
+    end
+
+    -- only the public coordinates are passed on. The import rejects points that are
+    -- not on the curve, which ECDH with a static key relies on (invalid curve attack)
+    local epk, epk_err = pkey.new(cjson_encode({
+        kty = epk_jwk.kty, crv = epk_jwk.crv, x = epk_jwk.x, y = epk_jwk.y,
+    }), { format = "JWK" })
+    if not epk then
+        error({reason="failed to load ephemeral public key: " .. (epk_err or "")})
+    end
+    local Z, derive_err = private_key:derive(epk)
+    if not Z then
+        error({reason="ECDH key derivation failed: " .. (derive_err or "")})
+    end
+    return Z
+end
+
+-- generate the sender's ephemeral key on the recipient's curve and compute Z
+local function ecdh_es_ephemeral_agreement(header, public_key_pem)
+    local public_key, pub_err = pkey.new(public_key_pem)
+    if not public_key then
+        error({reason="failed to load EC public key: " .. (pub_err or "")})
+    end
+    local params, param_err = public_key:get_parameters()
+    if not params then
+        error({reason="failed to get EC key parameters: " .. (param_err or "")})
+    end
+    local curve = ecdh_curves_by_nid[params.group]
+    if not curve then
+        error({reason="unsupported EC curve NID: " .. tostring(params.group)})
+    end
+    local ephemeral, eph_err = pkey.new({ type = "EC", curve = curve.openssl })
+    if not ephemeral then
+        error({reason="failed to generate ephemeral EC key: " .. (eph_err or "")})
+    end
+    local epk = cjson_decode(ephemeral:tostring("public", "JWK"))
+    header.epk = { kty = epk.kty, crv = epk.crv, x = epk.x, y = epk.y }
+    local Z, derive_err = ephemeral:derive(public_key)
+    if not Z then
+        error({reason="ECDH key derivation failed: " .. (derive_err or "")})
+    end
+    return Z
 end
 
 --@function raise the single, generic JWE decryption failure.
@@ -635,56 +733,29 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     end
     key, _, enc_key = derive_keys(header.enc, preshared_key)
   elseif alg == str_const.ECDH_ES then
-    if not preshared_key then
-        error({reason="EC private key must not be null"})
+    -- RFC 7516 Section 5.2 step 10: direct key agreement has an empty encrypted key
+    if encoded_encrypted_key ~= nil then
+        error({reason="JWE encrypted key must be empty for ECDH-ES"})
     end
-    local epk_jwk = header.epk
-    if not epk_jwk then
-        error({reason="missing epk in JWE header"})
-    end
-    local private_key, priv_err = pkey.new(preshared_key)
-    if not private_key then
-        error({reason="failed to load EC private key: " .. (priv_err or "")})
-    end
-    local epk, epk_err = pkey.new(cjson_encode(epk_jwk), { format = "JWK" })
-    if not epk then
-        error({reason="failed to load ephemeral public key: " .. (epk_err or "")})
-    end
-    local Z, derive_err = private_key:derive(epk)
-    if not Z then
-        error({reason="ECDH key derivation failed: " .. (derive_err or "")})
-    end
+    local Z = ecdh_es_shared_secret(header, preshared_key)
     local derived_key = derive_shared_key(header, Z)
     key, _, enc_key = derive_keys(header.enc, derived_key)
   elseif alg == str_const.ECDH_ES_A128KW or alg == str_const.ECDH_ES_A192KW or alg == str_const.ECDH_ES_A256KW then
-    if not preshared_key then
-        error({reason="EC private key must not be null"})
+    local Z = ecdh_es_shared_secret(header, preshared_key)
+    local wrapped_key = encoded_encrypted_key and _M:jwt_decode(encoded_encrypted_key)
+    if not wrapped_key then
+        error({reason="missing JWE encrypted key"})
     end
-    local epk_jwk = header.epk
-    if not epk_jwk then
-        error({reason="missing epk in JWE header"})
+    local ok, secret_key = pcall(function()
+        return aes_key_unwrap(derive_shared_key(header, Z), wrapped_key)
+    end)
+    if not ok then
+        -- DEPRECATED, to be removed in 1.0: see set_legacy_ecdh_kw_kdf
+        if not self.legacy_ecdh_kw_kdf then
+            error(secret_key, 0)
+        end
+        secret_key = aes_key_unwrap(derive_legacy_ecdh_kw_key(header, Z), wrapped_key)
     end
-    local private_key, priv_err = pkey.new(preshared_key)
-    if not private_key then
-        error({reason="failed to load EC private key: " .. (priv_err or "")})
-    end
-    local epk, epk_err = pkey.new(cjson_encode(epk_jwk), { format = "JWK" })
-    if not epk then
-        error({reason="failed to load ephemeral public key: " .. (epk_err or "")})
-    end
-    local Z, derive_err = private_key:derive(epk)
-    if not Z then
-        error({reason="ECDH key derivation failed: " .. (derive_err or "")})
-    end
-    local kw_alg_map = {
-        [str_const.ECDH_ES_A128KW] = str_const.A128KW,
-        [str_const.ECDH_ES_A192KW] = str_const.A192KW,
-        [str_const.ECDH_ES_A256KW] = str_const.A256KW,
-    }
-    local kw_alg = kw_alg_map[alg]
-    local kek = derive_shared_key({ enc = kw_alg, apu = header.apu, apv = header.apv }, Z)
-    local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
-    local secret_key = aes_key_unwrap(kek, wrapped_key)
     key, _, enc_key = derive_keys(header.enc, secret_key)
   elseif alg == str_const.A128KW or alg == str_const.A192KW or alg == str_const.A256KW then
     if not preshared_key then
@@ -973,61 +1044,15 @@ local function sign_jwe(self, secret_key, jwt_obj)
     _, mac_key, enc_key = derive_keys(enc, secret_key)
     encrypted_key = ""
   elseif alg == str_const.ECDH_ES then
-    local public_key, pub_err = pkey.new(secret_key)
-    if not public_key then
-        error({reason="failed to load EC public key: " .. (pub_err or "")})
-    end
-    local params, param_err = public_key:get_parameters()
-    if not params then
-        error({reason="failed to get EC key parameters: " .. (param_err or "")})
-    end
-    local curve = ec_nid_to_curve[params.group]
-    if not curve then
-        error({reason="unsupported EC curve NID: " .. tostring(params.group)})
-    end
-    local ephemeral, eph_err = pkey.new({ type = "EC", curve = curve })
-    if not ephemeral then
-        error({reason="failed to generate ephemeral EC key: " .. (eph_err or "")})
-    end
-    header.epk = cjson_decode(ephemeral:tostring("public", "JWK"))
+    local Z = ecdh_es_ephemeral_agreement(header, secret_key)
     encoded_header = _M:jwt_encode(header)
-    local Z, derive_err = ephemeral:derive(public_key)
-    if not Z then
-        error({reason="ECDH key derivation failed: " .. (derive_err or "")})
-    end
     local derived_key = derive_shared_key(header, Z)
     _, mac_key, enc_key = derive_keys(enc, derived_key)
     encrypted_key = ""
   elseif alg == str_const.ECDH_ES_A128KW or alg == str_const.ECDH_ES_A192KW or alg == str_const.ECDH_ES_A256KW then
-    local public_key, pub_err = pkey.new(secret_key)
-    if not public_key then
-        error({reason="failed to load EC public key: " .. (pub_err or "")})
-    end
-    local params, param_err = public_key:get_parameters()
-    if not params then
-        error({reason="failed to get EC key parameters: " .. (param_err or "")})
-    end
-    local curve = ec_nid_to_curve[params.group]
-    if not curve then
-        error({reason="unsupported EC curve NID: " .. tostring(params.group)})
-    end
-    local ephemeral, eph_err = pkey.new({ type = "EC", curve = curve })
-    if not ephemeral then
-        error({reason="failed to generate ephemeral EC key: " .. (eph_err or "")})
-    end
-    header.epk = cjson_decode(ephemeral:tostring("public", "JWK"))
+    local Z = ecdh_es_ephemeral_agreement(header, secret_key)
     encoded_header = _M:jwt_encode(header)
-    local Z, derive_err = ephemeral:derive(public_key)
-    if not Z then
-        error({reason="ECDH key derivation failed: " .. (derive_err or "")})
-    end
-    local kw_alg_map = {
-        [str_const.ECDH_ES_A128KW] = str_const.A128KW,
-        [str_const.ECDH_ES_A192KW] = str_const.A192KW,
-        [str_const.ECDH_ES_A256KW] = str_const.A256KW,
-    }
-    local kw_alg = kw_alg_map[alg]
-    local kek = derive_shared_key({ enc = kw_alg, apu = header.apu, apv = header.apv }, Z)
+    local kek = derive_shared_key(header, Z)
     key, mac_key, enc_key = derive_keys(enc)
     encrypted_key = aes_key_wrap(kek, key)
   elseif alg == str_const.A128KW or alg == str_const.A192KW or alg == str_const.A256KW then
