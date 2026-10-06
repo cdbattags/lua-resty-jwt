@@ -601,6 +601,19 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     error({reason="unsupported enc: " .. enc})
   end
 
+  -- jwt:set_alg_whitelist applies to JWE as well: both the key management
+  -- "alg" and the content encryption "enc" must be listed. Checked before any
+  -- key unwrap/derivation so a disallowed algorithm costs nothing (e.g. PBES2).
+  local alg_whitelist = self and self.alg_whitelist
+  if alg_whitelist ~= nil then
+    if alg_whitelist[alg] == nil then
+      error({reason="whitelist unsupported alg: " .. alg})
+    end
+    if alg_whitelist[enc] == nil then
+      error({reason="whitelist unsupported enc: " .. enc})
+    end
+  end
+
   local key, enc_key, _
   if alg == str_const.DIR then
     if not preshared_key  then
@@ -856,7 +869,12 @@ _M.trusted_certs_file = nil
 --
 -- @param algorithms - A table with keys for the supported algorithms
 --                     If the table is non-nil, during
---                     verify, the alg must be in the table
+--                     verify, the alg must be in the table.
+--                     For JWE tokens both the header "alg" (key management,
+--                     e.g. "RSA-OAEP-256", "dir") and "enc" (content
+--                     encryption, e.g. "A256GCM") must be in the table; this
+--                     is checked on load, before any key is unwrapped or
+--                     derived. E.g. {["RSA-OAEP-256"]=1, A256GCM=1}
 function _M.set_alg_whitelist(self, algorithms)
   self.alg_whitelist = algorithms
 end

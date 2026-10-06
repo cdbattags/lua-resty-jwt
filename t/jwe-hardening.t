@@ -393,3 +393,73 @@ RSA-OAEP tampered key: false failed to decrypt JWE
 RSA-OAEP tampered tag: false failed to decrypt JWE
 --- no_error_log
 [error]
+
+
+
+=== TEST 9: alg whitelist is enforced for JWE alg and enc before any key work
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local k32 = string.rep("k", 32)
+            local rest = "." .. jwt:jwt_encode(string.rep("\0", 40))
+                      .. "." .. jwt:jwt_encode(string.rep("\0", 12))
+                      .. "." .. jwt:jwt_encode("ciphertext")
+                      .. "." .. jwt:jwt_encode(string.rep("\0", 16))
+            -- p2c = 10^9 would block the worker for minutes if PBKDF2 ran
+            local pbes2 = jwt:jwt_encode('{"alg":"PBES2-HS512+A256KW","enc":"A256GCM",'
+                .. '"p2s":"' .. jwt:jwt_encode(string.rep("s", 16)) .. '","p2c":1000000000}') .. rest
+
+            jwt:set_alg_whitelist({ dir = 1, A256GCM = 1 })
+            ngx.update_time()
+            local start = ngx.now()
+            local obj = jwt:verify("password", pbes2)
+            ngx.update_time()
+            ngx.say("pbes2: ", obj.verified, " ", obj.reason)
+            ngx.say("fast: ", ngx.now() - start < 1)
+
+            -- no key at all: the whitelist fires before the key is touched
+            local rsa = jwt:jwt_encode('{"alg":"RSA-OAEP","enc":"A256GCM"}') .. rest
+            ngx.say("rsa: ", jwt:verify(nil, rsa).reason)
+
+            local kw = jwt:sign(k32, { header = { alg = "A256KW", enc = "A256GCM" }, payload = { foo = "bar" } })
+            local cbc = jwt:sign(k32 .. k32, { header = { alg = "dir", enc = "A256CBC-HS512" }, payload = { foo = "bar" } })
+            local gcm = jwt:sign(k32, { header = { alg = "dir", enc = "A256GCM" }, payload = { foo = "bar" } })
+
+            ngx.say("dir+A256GCM: ", jwt:verify(k32, gcm).verified)
+            ngx.say("dir+A256CBC-HS512: ", jwt:verify(k32 .. k32, cbc).reason)
+
+            -- JWS-only whitelist blocks JWE entirely
+            jwt:set_alg_whitelist({ RS256 = 1, HS256 = 1 })
+            ngx.say("jws-only: ", jwt:verify(k32, gcm).reason)
+
+            -- alg listed but not enc
+            jwt:set_alg_whitelist({ A256KW = 1 })
+            ngx.say("alg only: ", jwt:verify(k32, kw).reason)
+
+            jwt:set_alg_whitelist({ A256KW = 1, A256GCM = 1 })
+            ngx.say("alg+enc: ", jwt:verify(k32, kw).verified)
+
+            -- load_jwt is also gated
+            ngx.say("load_jwt: ", jwt:load_jwt(gcm, k32).reason)
+
+            jwt:set_alg_whitelist(nil)
+            ngx.say("no whitelist: ", jwt:verify(k32 .. k32, cbc).verified)
+        }
+    }
+--- request
+GET /t
+--- response_body
+pbes2: false whitelist unsupported alg: PBES2-HS512+A256KW
+fast: true
+rsa: whitelist unsupported alg: RSA-OAEP
+dir+A256GCM: true
+dir+A256CBC-HS512: whitelist unsupported enc: A256CBC-HS512
+jws-only: whitelist unsupported alg: dir
+alg only: whitelist unsupported enc: A256GCM
+alg+enc: true
+load_jwt: whitelist unsupported alg: dir
+no whitelist: true
+--- no_error_log
+[error]
