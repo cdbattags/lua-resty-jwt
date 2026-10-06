@@ -1,0 +1,87 @@
+#!/bin/bash
+# Build the LuaRocks and OPM packages for a release locally and check them.
+# Nothing is uploaded: the checkout is copied into a throwaway container, the
+# release rockspec is generated there, and opm gets a dummy .opmrc whose
+# upload server is unreachable. See RELEASING.md.
+#
+#   ./ci-release-dry-run X.Y.Z
+set -eo pipefail
+
+VERSION="${1:?usage: ./ci-release-dry-run X.Y.Z}"
+IMAGE="${IMAGE:-cdbattags/openresty-testsuite:latest}"
+
+docker run \
+  -i --rm \
+  --entrypoint=/bin/bash \
+  -v "$(pwd)":/src:ro \
+  -e VERSION="$VERSION" \
+  --name "lua-resty-jwt-release-dry-run-$$" \
+  "$IMAGE" \
+  -c '
+    set -eo pipefail
+    mkdir /lua-resty-jwt && cd /lua-resty-jwt
+    tar -C /src --exclude=./.git --exclude="./t/servroot*" --exclude=./core -cf - . | tar -xf -
+    ROCKSPEC="lua-resty-jwt-${VERSION}-1.rockspec"
+
+    echo "==> OPM: opm build (dummy .opmrc, upload_server unreachable)"
+    printf "%s\n" github_account=cdbattags \
+      github_token=0000000000000000000000000000000000000000 \
+      upload_server=http://127.0.0.1:9 \
+      download_server=https://opm.openresty.org > /root/.opmrc
+    opm build
+    TARBALL="$(ls lua-resty-jwt-*.tar.gz)"
+    case "$TARBALL" in
+      "lua-resty-jwt-${VERSION}.tar.gz") ;;
+      *) echo "!! OPM would publish $TARBALL, not ${VERSION}: bump _VERSION"; failed=1 ;;
+    esac
+
+    # opm build has resolved the dist.ini requires into /usr/local/openresty/site
+    echo "==> OPM: load every module with only the OPM dependencies"
+    mkdir /tmp/opm && tar -C /tmp/opm -xzf "$TARBALL"
+    resty -e "
+      package.path = \"/tmp/opm/\" .. \"${TARBALL%.tar.gz}\" .. \"/lib/?.lua;/usr/local/openresty/site/lualib/?.lua;/usr/local/openresty/site/lualib/?/init.lua;/usr/local/openresty/lualib/?.lua;/usr/local/openresty/lualib/?/init.lua\"
+      for _, m in ipairs({ \"resty.jwt\", \"resty.jwt.jwk\", \"resty.evp\", \"resty.jwt-validators\", \"resty.jwt-zlib\", \"resty.utils\" }) do
+        local ok, err = pcall(require, m)
+        print(ok and \"ok   \" or \"FAIL \", m, ok and \"\" or (\"  \" .. tostring(err):match(\"[^\\n]*\")))
+        if not ok then os.exit(1) end
+      end
+      print(\"lua-resty-openssl \", require(\"resty.openssl\")._VERSION, \" from \", package.searchpath(\"resty.openssl\", package.path))
+    " || failed=1
+
+    echo "==> LuaRocks: new_version (local file only)"
+    luarocks new_version lua-resty-jwt-dev-0.rockspec "${VERSION}-1" \
+      git+https://github.com/cdbattags/lua-resty-jwt.git --tag="v${VERSION}"
+    cat "$ROCKSPEC"
+    luarocks lint "$ROCKSPEC"
+
+    echo "==> LuaRocks: build from the local checkout and run the suite"
+    luarocks make "$ROCKSPEC"
+    luarocks show lua-resty-jwt
+    prove -j4 -r t
+
+    echo "==> every rockspec module is in both packages"
+    MODULES="$(ROCKSPEC="$ROCKSPEC" luajit -e "
+      local env = {}
+      setfenv(assert(loadfile(os.getenv(\"ROCKSPEC\"))), env)()
+      for mod, path in pairs(env.build.modules) do print(mod .. \" \" .. path) end
+    " | sort)"
+    INSTALLED="$(luarocks show --modules lua-resty-jwt)"
+    PACKED="$(tar -tzf "$TARBALL")"
+    while read -r mod path; do
+      case "$path" in
+        lib/*)
+          echo "$PACKED" | grep -qx "${TARBALL%.tar.gz}/$path" \
+            && echo "ok   OPM      $mod" || { echo "MISS OPM      $mod"; failed=1; }
+          ;;
+        *) echo "--   OPM      $mod (vendored, LuaRocks only)" ;;
+      esac
+      echo "$INSTALLED" | grep -qx "$mod" \
+        && echo "ok   LuaRocks $mod" || { echo "MISS LuaRocks $mod"; failed=1; }
+    done <<< "$MODULES"
+
+    echo "==> publish.yml version guard"
+    RELEASE_TAG="v${VERSION}" prove t/version.t || failed=1
+
+    [ -z "$failed" ] || { echo "==> dry run FAILED for ${VERSION}"; exit 1; }
+    echo "==> dry run OK for ${VERSION}"
+  '
