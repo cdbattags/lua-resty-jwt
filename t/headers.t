@@ -442,9 +442,11 @@ accepted
             ngx.say("list: ", check("jwt", any), " / ", check("at+jwt", any))
             local opt = { __header = { typ = validators.opt_typ_is("at+jwt") } }
             ngx.say("opt missing: ", check(nil, opt), " / opt wrong: ", check("JWT", opt))
-            for _, bad in ipairs({ {}, 1, { 1 } }) do
+            for _, bad in ipairs({ {}, 1, { 1 }, { JWT = true }, { "JWT", x = "at+jwt" } }) do
                 local ok, err = pcall(validators.typ_is, bad)
                 ngx.say(ok and "accepted" or err)
+                ok, err = pcall(validators.opt_typ_is, bad)
+                ngx.say("opt: ", ok and "accepted" or err)
             end
         }
     }
@@ -459,9 +461,16 @@ number: false 'typ' is malformed.  Expected to be a string.
 spec prefix: true everything is awesome~ :p
 list: true everything is awesome~ :p / false Header 'typ' ('at+jwt') returned failure
 opt missing: true everything is awesome~ :p / opt wrong: false Header 'typ' ('JWT') returned failure
-Cannot create validator for non-string table expected.
+Cannot create validator for empty table expected.
+opt: Cannot create validator for empty table expected.
 Cannot create validator for non-string or table expected.
+opt: Cannot create validator for non-string or table expected.
 Cannot create validator for non-string table expected.
+opt: Cannot create validator for non-string table expected.
+Cannot create validator for non-string table expected.
+opt: Cannot create validator for non-string table expected.
+Cannot create validator for non-string table expected.
+opt: Cannot create validator for non-string table expected.
 --- no_error_log
 [error]
 

@@ -734,11 +734,21 @@ function _M.opt_typ_is(expected)
   end
   ensure_not_nil(expected, messages.nil_validator, "expected")
   ensure_is_type(expected, "table", messages.wrong_type_validator, "string or table", "expected")
+  ensure_is_table(expected, messages.empty_table_validator, "expected")
   ensure_is_table_type(expected, "string", messages.wrong_table_type_validator, "string", "expected")
 
-  local accepted = {}
+  -- only list entries are read, so a table with other keys (e.g. a set
+  -- {JWT=true}) would make a validator that rejects every token
+  local accepted, n = {}, 0
   for _, v in ipairs(expected) do
     accepted[_M.normalize_typ(v)] = true
+    n = n + 1
+  end
+  for _ in pairs(expected) do
+    n = n - 1
+  end
+  if n ~= 0 then
+    error(string.format(messages.wrong_table_type_validator, "string", "expected"), 0)
   end
   return builtin(function(val, claim, jwt_json)
     if val == nil then return true end
