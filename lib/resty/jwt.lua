@@ -293,11 +293,16 @@ local function aes_gcm_key_wrap(kek, plaintext_key)
     if not encrypted then
         error({reason="AES-GCM key wrap failed: " .. (err or "")})
     end
-    local tag = c:get_aead_tag()
+    local tag = c:get_aead_tag(16)
     return encrypted, iv, tag
 end
 
 local function aes_gcm_key_unwrap(kek, wrapped_key, iv, tag)
+    -- RFC 7518 4.7.1: 96-bit IV and 128-bit tag. OpenSSL would otherwise accept
+    -- a truncated tag (1-16 bytes) and only compare that many bytes.
+    if #iv ~= 12 or #tag ~= 16 then
+        error({reason="invalid iv/tag length in header for AES-GCM key wrap"})
+    end
     local mode = gcm_kw_mode(kek)
     local c = assert(cipher.new(mode))
     local decrypted, err = c:decrypt(kek, iv, wrapped_key, false, nil, tag)
@@ -334,6 +339,18 @@ local function pbes2_derive_kek(alg, password, p2s_raw, p2c)
     end
     return kek
 end
+
+-- Required IV and authentication tag lengths (octets) per JWE "enc"
+-- (RFC 7518 5.2.3-5.2.5 and 5.3). Tags of any other length must be rejected:
+-- OpenSSL accepts truncated GCM tags, which would make forgery trivial.
+local jwe_enc_lengths = {
+  [str_const.A128CBC_HS256] = { iv = 16, tag = 16 },
+  [str_const.A192CBC_HS384] = { iv = 16, tag = 24 },
+  [str_const.A256CBC_HS512] = { iv = 16, tag = 32 },
+  [str_const.A128GCM] = { iv = 12, tag = 16 },
+  [str_const.A192GCM] = { iv = 12, tag = 16 },
+  [str_const.A256GCM] = { iv = 12, tag = 16 },
+}
 
 --@function decrypt payload
 --@param secret_key to decrypt the payload
@@ -401,21 +418,21 @@ local function encrypt_payload(secret_key, message, enc, aad )
     local iv_rand =  resty_random.bytes(12,true) -- 96 bit IV is recommended for efficiency
     local aes_256_gcm_cipher = assert(cipher.new(str_const.A256GCM_CIPHER_MODE))
     local encrypted = aes_256_gcm_cipher:encrypt(secret_key, iv_rand, message, false, aad)
-    local auth_tag = assert(aes_256_gcm_cipher:get_aead_tag())
+    local auth_tag = assert(aes_256_gcm_cipher:get_aead_tag(16))
     return encrypted, iv_rand, auth_tag
 
   elseif enc == str_const.A192GCM then
     local iv_rand =  resty_random.bytes(12,true)
     local aes_192_gcm_cipher = assert(cipher.new(str_const.A192GCM_CIPHER_MODE))
     local encrypted = aes_192_gcm_cipher:encrypt(secret_key, iv_rand, message, false, aad)
-    local auth_tag = assert(aes_192_gcm_cipher:get_aead_tag())
+    local auth_tag = assert(aes_192_gcm_cipher:get_aead_tag(16))
     return encrypted, iv_rand, auth_tag
 
   elseif enc == str_const.A128GCM then
     local iv_rand =  resty_random.bytes(12,true)
     local aes_128_gcm_cipher = assert(cipher.new(str_const.A128GCM_CIPHER_MODE))
     local encrypted = aes_128_gcm_cipher:encrypt(secret_key, iv_rand, message, false, aad)
-    local auth_tag = assert(aes_128_gcm_cipher:get_aead_tag())
+    local auth_tag = assert(aes_128_gcm_cipher:get_aead_tag(16))
     return encrypted, iv_rand, auth_tag
 
   else
@@ -623,6 +640,13 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   local cipher_text = _M:jwt_decode(encoded_cipher_text)
   local iv =  _M:jwt_decode(encoded_iv)
   local signature_or_tag = _M:jwt_decode(encoded_auth_tag)
+  local lengths = jwe_enc_lengths[header.enc]
+  if not iv or #iv ~= lengths.iv then
+    error({reason="invalid JWE initialization vector length"})
+  end
+  if not signature_or_tag or #signature_or_tag ~= lengths.tag then
+    error({reason="invalid JWE authentication tag length"})
+  end
   local basic_jwe = {
     typ = str_const.JWE,
     internal = {

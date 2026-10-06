@@ -122,7 +122,7 @@ verified: true
 --- request
 GET /t
 --- response_body
-valid: true
+valid: nil
 verified: false
 --- no_error_log
 [error]
