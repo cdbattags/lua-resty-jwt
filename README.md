@@ -8,23 +8,36 @@ As discussed in https://github.com/SkyLothar/lua-resty-jwt/issues/85, this proje
 
 # Name
 
-lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01.html) for ngx_lua and LuaJIT
+lua-resty-jwt - [JWT](https://www.rfc-editor.org/rfc/rfc7519) (JWS and JWE) for ngx_lua and LuaJIT
 
 [![test](https://github.com/cdbattags/lua-resty-jwt/actions/workflows/test.yml/badge.svg)](https://github.com/cdbattags/lua-resty-jwt/actions/workflows/test.yml)
 
-
-**Note:** since 0.4.0, HMAC is computed with [lua-resty-openssl](https://github.com/fffonion/lua-resty-openssl). The vendored `resty.hmac` ([lua-resty-hmac](https://github.com/jkeys089/lua-resty-hmac)) is still installed with this rock for code that requires it, but this library no longer uses it, and it will be removed in 1.0.
+**Upgrading from 0.3.x?** 0.4.0 is a security release with breaking changes. Read [CHANGELOG.md](CHANGELOG.md), especially [Upgrading from 0.3.x](CHANGELOG.md#upgrading-from-03x), and the [Security notes](#security-notes) below.
 
 # Installation
 
-- luarocks: `luarocks install lua-resty-jwt`
-- ~~opm: `opm get cdbattags/lua-resty-jwt`~~ (deprecated for 0.2+)
-- Head to [release page](https://github.com/cdbattags/lua-resty-jwt/releases) and download `tar.gz`
+- LuaRocks: `luarocks install lua-resty-jwt`
+- OPM: `opm get cdbattags/lua-resty-jwt`
+- Or download a `tar.gz` from the [release page](https://github.com/cdbattags/lua-resty-jwt/releases) and add its `lib` directory to [lua_package_path](https://github.com/openresty/lua-nginx-module#lua_package_path), e.g. `lua_package_path "/path/to/lua-resty-jwt/lib/?.lua;;";`.
+
+Each release is published to LuaRocks and OPM from the same tag; see [RELEASING.md](RELEASING.md).
+
+## Requirements
+
+- [OpenResty](https://openresty.org) (ngx_lua with LuaJIT and lua-resty-core), built with OpenSSL. CI runs OpenResty 1.27.1.2 with OpenSSL 3.0.
+- [lua-resty-openssl](https://github.com/fffonion/lua-resty-openssl) >= 1.1.0 from LuaRocks, or >= 1.2.0 from OPM (OPM has no 1.1.x build). Both package managers install it for you.
+- lua-cjson and `resty.random` (from lua-resty-string), which ship with OpenResty, so they are not installed separately. Nothing else is needed: lua-resty-hmac is no longer a dependency.
+- JWE compression (`zip: "DEF"`) uses the zlib that nginx is already linked against, through the LuaJIT FFI.
+
+Since 0.4.0, HMACs are computed with lua-resty-openssl. The LuaRocks package still installs the vendored `resty.hmac` ([lua-resty-hmac](https://github.com/jkeys089/lua-resty-hmac)) for code that requires it, but this library no longer uses it, OPM no longer pulls it in, and it will be removed in 1.0.
 
 
 # Table of Contents
 
 * [Name](#name)
+* [Installation](#installation)
+    * [Requirements](#requirements)
+* [Security notes](#security-notes)
 * [Status](#status)
 * [Description](#description)
 * [Synopsis](#synopsis)
@@ -47,25 +60,33 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [set_legacy_ecdh_kw_kdf](#set_legacy_ecdh_kw_kdf)
 * [Verification](#verification)
     * [JWT Validators](#jwt-validators)
-    * [Legacy/Timeframe options](#legacy-timeframe-options)
-* [Breaking changes in 0.4.0](#breaking-changes-in-040)
-* [Example](#examples)
-* [Installation](#installation)
+    * [Legacy/Timeframe options](#legacytimeframe-options)
+* [Upgrading to 0.4.0](#upgrading-to-040)
+* [Examples](#examples)
 * [Testing With Docker](#testing-with-docker)
+* [Changelog](CHANGELOG.md)
+* [Releasing](RELEASING.md)
 * [Authors](AUTHORS.md)
 * [See Also](#see-also)
 
+# Security notes
+
+* **Always pin the algorithms you accept.** Use [verify_with](#verify_with) with `algorithms = { ... }`, or [set_alg_whitelist](#set_alg_whitelist) (for JWE, list both the `alg` and the `enc`). The key type binding stops the known key-confusion attacks, but it is a second line of defence, not a replacement for knowing which algorithms you issue.
+* **Never return `jwt_obj.reason` to clients.** It explains why a token failed and can quote parts of it (for example the signature). Log it, and answer with a generic `401`, as the [examples](examples/README.md) do.
+* **Only trust claims when `jwt_obj.verified` is `true`.** `load_jwt` parses without verifying, so its `payload` is attacker controlled.
+* **Key denylists and replay caches on `jti`, not on the raw token string.** Since 0.4.0 every token has a single accepted encoding, but the same claims can still be carried by different valid tokens. ECDSA signatures, for example, can be rewritten into a second valid signature without the key. Use the `jti` option of [verify_with](#verify_with) or [validators.jti_hook](#validatorsjti_hookhook-opt).
+* **JWE with asymmetric key management does not authenticate the sender.** With `RSA-OAEP*` and `ECDH-ES*`, anyone who has the recipient's public key can create a JWE that decrypts and "verifies". `verified = true` only means the content was not tampered with after encryption. To know who sent a token, sign it (a JWS, or a JWS nested inside the JWE that you verify yourself), or use a symmetric JWE algorithm with a shared secret.
+* **Rotate keys after upgrading if you hit the RSA-OAEP signing error.** Up to 0.3.2, `sign` put the whole key into the error reason when an `RSA-OAEP*` JWE was signed with a key that was neither a certificate nor a public key (for example a private key or an HMAC secret). If that error was ever logged or returned, treat the key as exposed and rotate it.
+
+[Back to TOC](#table-of-contents)
+
 # Status
 
-This library is under active development but is considered production ready.
+This library is under active development but is considered production ready. Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 # Description
 
-This library requires an nginx build with OpenSSL,
-the [ngx_lua module](http://wiki.nginx.org/HttpLuaModule),
-the [LuaJIT 2.0](http://luajit.org/luajit.html),
-the [lua-resty-openssl](https://github.com/fffonion/lua-resty-openssl),
-and the [lua-resty-string](https://github.com/openresty/lua-resty-string),
+lua-resty-jwt signs and verifies JWS tokens and encrypts and decrypts JWE tokens (compact serialization only) in OpenResty, with keys given as PEM, JWK, JWK Set or lua-resty-openssl objects, and validates their claims. See [Requirements](#requirements) for what it needs.
 
 # Synopsis
 
@@ -84,7 +105,8 @@ and the [lua-resty-string](https://github.com/openresty/lua-resty-string),
                 local jwt_token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9" ..
                     ".eyJmb28iOiJiYXIifQ" ..
                     ".VAoRL1IU0nOguxURF2ZcKR0SGKE1gCbqwyh8u2MLAyY"
-                local jwt_obj = jwt:verify("lua-resty-jwt", jwt_token)
+                local jwt_obj = jwt:verify_with("lua-resty-jwt", jwt_token, { algorithms = { "HS256" } })
+                -- for demonstration only: never send jwt_obj.reason to real clients
                 ngx.say(cjson.encode(jwt_obj))
             ';
         }
@@ -128,7 +150,9 @@ To load this library,
 
 sign a table_of_jwt to a jwt_token.
 
-The `alg` argument specifies which signing algorithm to use (`HS256`, `HS512`, `RS256`, `RS512`, `PS256`, `PS512`, `ES256`, `ES512`).
+The `alg` header specifies which signing algorithm to use: `HS256`, `HS384`, `HS512`, `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512`, `Ed25519`, `Ed448` or `EdDSA`. `alg: none` is not supported. A header with `enc` makes a JWE instead, see [sign JWE](#sign-jwe).
+
+The key is the shared secret for `HS*` (a string, an `oct` JWK, or a function returning the secret for the header's `kid`), and a PEM private key for the others: RSA for `RS*`/`PS*`, EC on the curve of the alg for `ES*` (P-256, P-384, P-521), Ed25519 or Ed448 for the EdDSA algorithms. `sign` raises an error table `{ reason = ... }` when it fails.
 
 The header is serialized with its parameters in a fixed order (`typ`, `alg`, `enc`, `zip`, `kid`, then the others sorted by name), so the same header always produces the same encoded header, whichever way the table was built. The payload is serialized by the payload encoder (cjson by default) in whatever order it produces.
 
@@ -261,15 +285,15 @@ Computes the [RFC 7638](https://www.rfc-editor.org/rfc/rfc7638) thumbprint of a 
 ## load & verify
 
 ```
-syntax: local jwt_obj = jwt:load_jwt(jwt_token)
-syntax: local verified = jwt:verify_jwt_obj(key, jwt_obj [, claim_spec [, ...]])
+syntax: local jwt_obj = jwt:load_jwt(jwt_token [, key])
+syntax: local jwt_obj = jwt:verify_jwt_obj(key, jwt_obj [, claim_spec [, ...]])
 ```
 
 ```
 verify = load_jwt +  verify_jwt_obj
 ```
 
-load jwt, check for kid, then verify it with the correct key
+load jwt, check for kid, then verify it with the correct key. A JWE is decrypted while it is loaded, so `load_jwt` needs its `key`; a JWS is only parsed. The result of `load_jwt` is not verified: don't use its `payload` until `verify_jwt_obj` has set `verified` to `true`.
 
 `load_jwt` parses strictly: a JWS must have exactly 3 dot-separated parts and a JWE exactly 5, and no part may be empty (`invalid jwt string: empty <part>`), with one exception: a JWE's encrypted key, which must be empty for `dir` and `ECDH-ES` and non-empty for every other `alg`. An empty JWS signature is never accepted (`alg: none` is not supported). Tokens whose `crit` header isn't understood are rejected here too, see [set_crit_whitelist](#set_crit_whitelist).
 
@@ -277,14 +301,15 @@ load jwt, check for kid, then verify it with the correct key
 
 ```
 {
+    "typ": "JWT",
     "raw_header": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9",
-    "raw_payload: "eyJmb28iOiJiYXIifQ",
-    "signature": "wrong-signature",
+    "raw_payload": "eyJmb28iOiJiYXIifQ",
+    "signature": "d3Jvbmctc2lnbmF0dXJl",
     "header": {"typ": "JWT", "alg": "HS256"},
     "payload": {"foo": "bar"},
     "verified": false,
     "valid": true,
-    "reason": "signature mismatched: wrong-signature"
+    "reason": "signature mismatch: d3Jvbmctc2lnbmF0dXJl"
 }
 ```
 
@@ -408,14 +433,26 @@ Set the highest PBES2 iteration count (`p2c` header) accepted when decrypting `P
 
 [Back to TOC](#table-of-contents)
 
-## sign-jwe
+## sign JWE
 
 `syntax: local jwt_token = jwt:sign(key, table_of_jwt)`
 
-sign a table_of_jwt to a jwt_token.
+Encrypt a table_of_jwt into a JWE (a header with `enc`, or `typ: "JWE"`). The `typ` header is not included in the JWE.
 
-The `alg` argument specifies which key management algorithm to use (`dir`, `RSA-OAEP`, `RSA-OAEP-256`, `ECDH-ES`).
-The `enc` argument specifies which content encryption algorithm to use (`A128CBC-HS256`, `A256CBC-HS512`, `A128GCM`, `A256GCM`).
+The `enc` header specifies the content encryption algorithm (RFC 7518 §5): `A128CBC-HS256`, `A192CBC-HS384`, `A256CBC-HS512`, `A128GCM`, `A192GCM` or `A256GCM`.
+
+The `alg` header specifies the key management algorithm (RFC 7518 §4) and what `key` has to be:
+
+| `alg` | key to `sign` (encrypt) with | key to `verify`/`load_jwt` (decrypt) with |
+|---|---|---|
+| `dir` | the content encryption key itself: 32, 48 or 64 bytes for `A128CBC-HS256`/`A192CBC-HS384`/`A256CBC-HS512`, 16, 24 or 32 bytes for `A128GCM`/`A192GCM`/`A256GCM` | the same key, or an `oct` JWK |
+| `A128KW`, `A192KW`, `A256KW` | a key of exactly 16, 24 or 32 bytes | the same key, or an `oct` JWK |
+| `A128GCMKW`, `A192GCMKW`, `A256GCMKW` | a key of exactly 16, 24 or 32 bytes | the same key, or an `oct` JWK |
+| `PBES2-HS256+A128KW`, `PBES2-HS384+A192KW`, `PBES2-HS512+A256KW` | a password (signs with 4096 iterations and a 16-byte salt) | the same password, or an `oct` JWK; see [set_pbes2_max_count](#set_pbes2_max_count) |
+| `RSA-OAEP`, `RSA-OAEP-256`, `RSA-OAEP-384`, `RSA-OAEP-512` | the recipient's RSA public key or certificate (PEM) | the RSA private key (PEM, private `RSA` JWK or `pkey`) |
+| `ECDH-ES`, `ECDH-ES+A128KW`, `ECDH-ES+A192KW`, `ECDH-ES+A256KW` | the recipient's EC public key (PEM) on P-256, P-384 or P-521 | the EC private key (PEM, private `EC` JWK or `pkey`) |
+
+`RSA1_5` is not supported, and neither are `ECDH-ES*` with X25519/X448 keys. When decrypting, a symmetric key or password that is empty or is PEM/DER key material is refused. With `RSA-OAEP*` and `ECDH-ES*` anyone holding the public key can make a valid JWE, see [Security notes](#security-notes).
 
 The optional `zip` header parameter (RFC 7516 §4.1.3) compresses the payload
 before it is encrypted. The only registered value is `DEF` (raw DEFLATE,
@@ -538,25 +575,15 @@ to the old derivation, so tokens issued by 0.3.x can still be read while they ex
 [Back to TOC](#table-of-contents)
 
 
-# Breaking changes in 0.4.0
+# Upgrading to 0.4.0
 
-Key handling:
-
-* `HS*` secrets must not be empty, and must not be DER-encoded keys or certificates (in addition to PEM). This applies to signing and verifying.
-* `HS*` and the symmetric JWE algorithms (`dir`, `A*KW`, `A*GCMKW`, `PBES2-*`) refuse asymmetric keys given as a JWK, JWK Set, `pkey` or `x509` object. The JWE algorithms also refuse empty, PEM and DER secrets. Previously a public key could be used as a `PBES2` password, so anyone holding the verifier's RSA public key could forge a JWE that `jwt:verify` accepted.
-* A string secret that is a JSON object with a `kty` or `keys` member is now treated as a JWK/JWK Set rather than as raw HMAC secret bytes.
-
-Token output and validators:
-
-* `sign` emits header parameters in a fixed order (see [sign](#sign)), so the encoded header (and so the token) can differ from what earlier versions produced for the same input. Such tokens still verify everywhere; this only matters if you compare tokens byte for byte with ones signed before 0.4.0.
-* Validators receive the verified payload as a 4th argument. `jwt_json` is no longer built for validators that cannot read it (those of `resty.jwt-validators`, and functions declaring fewer than three parameters).
-* HMAC is computed with `resty.openssl.hmac`; `resty.jwt` no longer loads the vendored `resty.hmac`.
+0.4.0 fixes several vulnerabilities and changes behaviour that applications may rely on. [CHANGELOG.md](CHANGELOG.md) lists every breaking change, and its [Upgrading from 0.3.x](CHANGELOG.md#upgrading-from-03x) section covers the ones you are most likely to hit and how to fix them.
 
 [Back to TOC](#table-of-contents)
 
 # Verification
 
-Both the `jwt:load` and `jwt:verify_jwt_obj` functions take, as additional parameters, any number of optional `claim_spec` parameters.  A `claim_spec` is simply a lua table of claims and validators.  Each key in the `claim_spec` table corresponds to a matching key in the payload, and the `validator` is a function that will be called to determine if the claims are met.
+The `jwt:verify` and `jwt:verify_jwt_obj` functions (and the `claim_specs` option of `jwt:verify_with`) take, as additional parameters, any number of optional `claim_spec` parameters.  A `claim_spec` is simply a lua table of claims and validators.  Each key in the `claim_spec` table corresponds to a matching key in the payload, and the `validator` is a function that will be called to determine if the claims are met.
 
 The signature of a `validator` function is:
 
@@ -572,7 +599,7 @@ A special claim named `__jwt` can be used such that if a `validator` function ex
 
 A special claim named `__header` validates header parameters instead of payload claims. Its value is a table mapping header parameter names to `validator` functions, each called with the header parameter's value as `val` and its name as `claim`, e.g. `{ __header = { typ = validators.typ_is("at+jwt"), kid = validators.required() } }`. Like all validators, they only run after the signature (or a JWE's authentication tag) has been verified.
 
-Multiple `claim_spec` tables can be specified to the `jwt:load` and `jwt:verify_jwt_obj` - and they will be executed in order.  There is no guarantee of the execution order of individual `validators` within a single `claim_spec`.  If a `claim_spec` fails, then any following `claim_specs` will *NOT* be executed.
+Multiple `claim_spec` tables can be specified to `jwt:verify` and `jwt:verify_jwt_obj` - and they will be executed in order.  There is no guarantee of the execution order of individual `validators` within a single `claim_spec`.  If a `claim_spec` fails, then any following `claim_specs` will *NOT* be executed.
 
 
 ### sample `claim_spec` ###
@@ -727,7 +754,7 @@ A function to set the default leeway (in seconds) used for `is_not_before`, `is_
 
 #### `validators.set_system_clock(clock)` ####
 
-A function to set the system clock used for `is_not_before` and `is_not_expired`.  The default is to use `ngx.now`
+A function to set the system clock used for the date validators (`is_not_before`, `is_not_expired`, `is_at` and `issued_at`).  The default is to use `ngx.now`
 
 ### sample `claim_spec` using validators ###
 
@@ -745,7 +772,7 @@ local claim_spec = {
 
 In order to support code which used previous versions of this library, as well as to simplify specifying timeframe-based `claim_specs`, you may use in place of any single `claim_spec` parameter a table of `validation_options`.  The parameter should be expressed as a key/value table. Each key of the table should be picked from the following list.
 
-When using legacy `validation_options`, you *MUST ONLY* specify these options.  That is, you cannot mix legacy `validation_options` with other `claim_spec` validators.  In order to achieve that, you must specify multiple options to the `jwt:load`/`jwt:verify_jwt_obj` functions.
+When using legacy `validation_options`, you *MUST ONLY* specify these options.  That is, you cannot mix legacy `validation_options` with other `claim_spec` validators.  In order to achieve that, you must specify multiple options to the `jwt:verify`/`jwt:verify_jwt_obj` functions.
 
 * `lifetime_grace_period`: Define the leeway in seconds to account for clock skew between the server that generated the jwt and the server validating it. Value should be zero (`0`) or a positive integer.
 
@@ -821,45 +848,20 @@ local jwt_obj = jwt:verify(key, jwt_token,
 
 [Back to TOC](#table-of-contents)
 
-# Installation
-
-Using Luarocks
-```bash
-luarocks install lua-resty-jwt
-```
-
-It is recommended to use the latest [ngx_openresty bundle](http://openresty.org) directly.
-
-Also, You need to configure
-the [lua_package_path](https://github.com/openresty/lua-nginx-module#lua_package_path) directive to
-add the path of your lua-resty-jwt source tree to ngx_lua's Lua module search path, as in
-
-```nginx
-    # nginx.conf
-    http {
-        lua_package_path "/path/to/lua-resty-jwt/lib/?.lua;;";
-        ...
-    }
-```
-
-and then load the library in Lua:
-
-```lua
-    local jwt = require "resty.jwt"
-```
-
-[Back to TOC](#table-of-contents)
-
 # Testing With Docker
 
 ```
 ./ci
 ```
 
+This runs `luarocks make` and the whole Test::Nginx suite (`prove -j4 -r t`) in the `cdbattags/openresty-testsuite` image. `./ci-release-dry-run X.Y.Z` builds and checks both release packages without uploading anything, see [RELEASING.md](RELEASING.md).
+
 [Back to TOC](#table-of-contents)
 
 # See Also
 
-* the ngx_lua module: http://wiki.nginx.org/HttpLuaModule
+* the ngx_lua module: https://github.com/openresty/lua-nginx-module
+* lua-resty-openssl: https://github.com/fffonion/lua-resty-openssl
+* RFC 7515 (JWS), RFC 7516 (JWE), RFC 7517 (JWK), RFC 7518 (JWA), RFC 7519 (JWT), RFC 7638 (JWK thumbprint), RFC 8725 (JWT best current practices)
 
 [Back to TOC](#table-of-contents)
