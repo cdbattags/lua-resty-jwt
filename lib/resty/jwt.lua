@@ -129,6 +129,7 @@ local str_const = {
   lifetime_grace_period = "lifetime_grace_period",
   require_nbf_claim = "require_nbf_claim",
   require_exp_claim = "require_exp_claim",
+  pem_begin = "-----BEGIN",
   internal_error = "internal error",
   jwe_decrypt_failed = "failed to decrypt JWE",
   everything_awesome = "everything is awesome~ :p"
@@ -1121,6 +1122,45 @@ local function get_secret_str(secret_or_function, jwt_obj)
   end
 end
 
+-- HMAC JWS algorithms -> hmac digest and raw signature length in bytes
+local hmac_algs = {
+  [str_const.HS256] = { algo = hmac.ALGOS.SHA256, len = 32 },
+  [str_const.HS384] = { algo = hmac.ALGOS.SHA384, len = 48 },
+  [str_const.HS512] = { algo = hmac.ALGOS.SHA512, len = 64 },
+}
+
+--@function hmac_sign : compute the raw HMAC signature of a JWS signing input
+--@param alg HS256, HS384 or HS512
+--@param secret the HMAC secret (string)
+--@param message the JWS signing input (header.payload)
+--@return raw signature bytes
+local function hmac_sign(alg, secret, message)
+  local spec = hmac_algs[alg]
+  if not spec then
+    error({reason="unsupported alg: " .. tostring(alg)})
+  end
+  return hmac:new(secret, spec.algo):final(message)
+end
+
+--@function verify the HMAC signature of a JWS object
+--@return nil on success, failure reason otherwise
+local function verify_hmac_signature(secret, jwt_obj, alg)
+  local secret_str = get_secret_str(secret, jwt_obj)
+  local raw_header = get_raw_part(str_const.header, jwt_obj)
+  local raw_payload = get_raw_part(str_const.payload, jwt_obj)
+  local message = string_format(str_const.regex_join_msg, raw_header, raw_payload)
+  local expected = hmac_sign(alg, secret_str, message)
+
+  local encoded_sig = jwt_obj[str_const.signature]
+  local sig = type(encoded_sig) == str_const.string and _M:jwt_decode(encoded_sig, false)
+  -- reject undecodable, wrong length and non-canonical (malleable) encodings
+  if not sig or #sig ~= hmac_algs[alg].len or _M:jwt_encode(sig) ~= encoded_sig
+      or not constant_time_equals(sig, expected) then
+    return "signature mismatch: " .. tostring(encoded_sig)
+  end
+  return nil
+end
+
 --@function sign  : create a jwt/jwe signature from jwt_object
 --@param secret key
 --@param jwt/jwe payload
@@ -1143,15 +1183,9 @@ function _M.sign(self, secret_key, jwt_obj)
   local message = string_format(str_const.regex_join_msg, raw_header, raw_payload)
   local alg = jwt_obj[str_const.header][str_const.alg]
   local signature = ""
-  if alg == str_const.HS256 then
+  if hmac_algs[alg] then
     local secret_str = get_secret_str(secret_key, jwt_obj)
-    signature = hmac:new(secret_str, hmac.ALGOS.SHA256):final(message)
-  elseif alg == str_const.HS384 then
-    local secret_str = get_secret_str(secret_key, jwt_obj)
-    signature = hmac:new(secret_str, hmac.ALGOS.SHA384):final(message)
-  elseif alg == str_const.HS512 then
-    local secret_str = get_secret_str(secret_key, jwt_obj)
-    signature = hmac:new(secret_str, hmac.ALGOS.SHA512):final(message)
+    signature = hmac_sign(alg, secret_str, message)
   elseif alg == str_const.RS256 or alg == str_const.RS384 or alg == str_const.RS512
       or alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512 then
     local signer, err
@@ -1432,22 +1466,20 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
     return jwt_obj
   end
 
-  local jwt_str = string_format(str_const.regex_jwt_join_str, jwt_obj.raw_header , jwt_obj.raw_payload , jwt_obj.signature)
-
   if self.alg_whitelist ~= nil then
     if self.alg_whitelist[alg] == nil then
       return {verified=false, reason="whitelist unsupported alg: " .. alg}
     end
   end
 
-  if alg == str_const.HS256 or alg == str_const.HS384 or alg == str_const.HS512 then
-    local success, ret = pcall(_M.sign, self, secret, jwt_obj)
+  if hmac_algs[alg] then
+    -- verify directly (not via _M.sign) so sign-time header checks such as typ
+    -- don't apply, and compare signatures in constant time
+    local success, ret = pcall(verify_hmac_signature, secret, jwt_obj, alg)
     if not success then
-      -- syntax check
-      jwt_obj[str_const.reason] = ret[str_const.reason] or str_const.internal_error
-    elseif jwt_str ~= ret then
-      -- signature check
-      jwt_obj[str_const.reason] = "signature mismatch: " .. jwt_obj[str_const.signature]
+      jwt_obj[str_const.reason] = type(ret) == str_const.table and ret[str_const.reason] or str_const.internal_error
+    elseif ret then
+      jwt_obj[str_const.reason] = ret
     end
   elseif alg == str_const.RS256 or alg == str_const.RS384 or alg == str_const.RS512
       or alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512
