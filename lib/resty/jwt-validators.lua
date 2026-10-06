@@ -13,6 +13,10 @@ local _M = { _VERSION = "0.2.4" }
 
   There is a special claim name of "__jwt" that can be used to validate the entire jwt_obj.
 
+  There is a special claim name of "__header" whose value is not a validator but a table mapping
+  header parameter names to validators, e.g. { __header = { typ = typ_is("at+jwt") } }.  Each one is
+  called with the header parameter's value as "val" and its name as "claim".
+
   "val" is the value being tested.  It may be nil if the claim doesn't exist in the jwt_obj.  If the function
   is being called for the "__jwt" claim, then "val" will contain a deep clone of the full jwt object.
 
@@ -40,6 +44,7 @@ local messages = {
   empty_table_validator = "Cannot create validator for empty table %s.",
   wrong_table_type_validator = "Cannot create validator for non-%s table %s.",
   required_claim = "'%s' claim is required.",
+  required_header = "'%s' header is required.",
   wrong_type_claim = "'%s' is malformed.  Expected to be a %s.",
   missing_claim = "Missing one of claims - [ %s ]."
 }
@@ -447,6 +452,41 @@ function _M.normalize_typ(typ)
   typ = string.lower(typ)
   local short = string.match(typ, "^application/([^/]*)$")
   return short or typ
+end
+
+--[[
+    Returns a validator for the "typ" *header* that checks it is (one of) the
+    given type(s), compared with normalize_typ (so "application/at+jwt" equals
+    "at+jwt").  The value of expected must be a string or a non-empty table of
+    strings.  Use it in a claim spec's "__header" table, e.g.
+      { __header = { typ = validators.typ_is("at+jwt") } }
+    The opt_ version passes when the header has no "typ".
+]]--
+function _M.opt_typ_is(expected)
+  if type(expected) == "string" then
+    expected = { expected }
+  end
+  ensure_not_nil(expected, messages.nil_validator, "expected")
+  ensure_is_type(expected, "table", messages.wrong_type_validator, "string or table", "expected")
+  ensure_is_table_type(expected, "string", messages.wrong_table_type_validator, "string", "expected")
+
+  local accepted = {}
+  for _, v in ipairs(expected) do
+    accepted[_M.normalize_typ(v)] = true
+  end
+  return function(val, claim, jwt_json)
+    if val == nil then return true end
+
+    ensure_is_type(val, "string", messages.wrong_type_claim, claim, "string")
+    return accepted[_M.normalize_typ(val)] == true
+  end
+end
+
+function _M.typ_is(expected)
+  return _M.chain(function(val, claim, jwt_json)
+    ensure_not_nil(val, messages.required_header, claim)
+    return true
+  end, _M.opt_typ_is(expected))
 end
 
 

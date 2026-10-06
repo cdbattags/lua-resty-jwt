@@ -73,6 +73,7 @@ local str_const = {
   nbf = "nbf",
   iss = "iss",
   full_obj = "__jwt",
+  header_specs = "__header",
   crit = "crit",
   x5c = "x5c",
   x5u = 'x5u',
@@ -1727,8 +1728,18 @@ local function prepare_claim_specs(self, jwt_obj, ...)
       claim_spec = get_claim_spec_from_legacy_options(self, claim_spec)
       claim_specs[i] = claim_spec
     end
-    for _, fx in pairs(claim_spec) do
-      if type(fx) ~= str_const.funct then
+    for claim, fx in pairs(claim_spec) do
+      if claim == str_const.header_specs then
+        -- "__header" maps header parameter names to validators
+        if type(fx) ~= str_const.table then
+          error("Claim spec '__header' must be a table mapping header names to validator functions", 0)
+        end
+        for name, header_fx in pairs(fx) do
+          if type(name) ~= str_const.string or type(header_fx) ~= str_const.funct then
+            error("Header spec value must be a function - see jwt-validators.lua for helper functions", 0)
+          end
+        end
+      elseif type(fx) ~= str_const.funct then
         error("Claim spec value must be a function - see jwt-validators.lua for helper functions", 0)
       end
     end
@@ -1739,35 +1750,54 @@ end
 -- Validates the claims of an authenticated object against prepared claim specs.
 -- Must only be called once the signature/authentication tag has been verified,
 -- so validators never see (or leak, through failure reasons) forged claims.
+-- Runs one validator, setting the failure reason on jwt_obj.
+-- @param kind "Claim" or "Header", used in generic failure reasons
+-- @return true if the validator passed
+local function run_validator(jwt_obj, fx, val, name, jwt_json, kind)
+  local success, ret = pcall(fx, val, name, jwt_json)
+  if not success then
+    if type(ret) == str_const.table and ret.reason ~= nil then
+      jwt_obj[str_const.reason] = tostring(ret.reason)
+    elseif type(ret) == str_const.string then
+      jwt_obj[str_const.reason] = string.gsub(ret, "^.-:%d-: ", "")
+    else
+      jwt_obj[str_const.reason] = string.format("%s '%s' validation failed", kind, tostring(name))
+    end
+    return false
+  elseif ret == false then
+    jwt_obj[str_const.reason] = string.format("%s '%s' ('%s') returned failure", kind, tostring(name), tostring(val))
+    return false
+  end
+  return true
+end
+
 local function validate_claims(jwt_obj, claim_specs)
   -- Encode the current jwt_obj and use it when calling the individual validation functions
   local jwt_json = cjson_encode(jwt_obj)
   -- Claims only exist in JSON object payloads. Indexing a string payload would
   -- otherwise hit the string library (e.g. "sub" -> string.sub).
   local payload = jwt_obj[str_const.payload]
+  local header = jwt_obj[str_const.header]
 
   -- Validate all our specs
   for _, claim_spec in ipairs(claim_specs) do
     for claim, fx in pairs(claim_spec) do
-      local val
-      if claim == str_const.full_obj then
-        val = cjson_decode(jwt_json)
-      elseif type(payload) == str_const.table then
-        val = payload[claim]
-      end
-      local success, ret = pcall(fx, val, claim, jwt_json)
-      if not success then
-        if type(ret) == str_const.table and ret.reason ~= nil then
-          jwt_obj[str_const.reason] = tostring(ret.reason)
-        elseif type(ret) == str_const.string then
-          jwt_obj[str_const.reason] = string.gsub(ret, "^.-:%d-: ", "")
-        else
-          jwt_obj[str_const.reason] = string.format("Claim '%s' validation failed", tostring(claim))
+      if claim == str_const.header_specs then
+        for name, header_fx in pairs(fx) do
+          if not run_validator(jwt_obj, header_fx, header[name], name, jwt_json, "Header") then
+            return false
+          end
         end
-        return false
-      elseif ret == false then
-        jwt_obj[str_const.reason] = string.format("Claim '%s' ('%s') returned failure", tostring(claim), tostring(val))
-        return false
+      else
+        local val
+        if claim == str_const.full_obj then
+          val = cjson_decode(jwt_json)
+        elseif type(payload) == str_const.table then
+          val = payload[claim]
+        end
+        if not run_validator(jwt_obj, fx, val, claim, jwt_json, "Claim") then
+          return false
+        end
       end
     end
   end

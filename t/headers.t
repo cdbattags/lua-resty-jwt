@@ -416,3 +416,145 @@ GET /t
 accepted
 --- no_error_log
 [error]
+
+
+
+=== TEST 11: __header validators with typ_is (same normalization as sign)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local function check(typ_header, spec)
+                local header = { alg = "HS256", typ = typ_header }
+                local obj = jwt:verify("secret", hs_token("secret", header), spec)
+                return tostring(obj.verified) .. " " .. obj.reason
+            end
+            local at = { __header = { typ = validators.typ_is("at+jwt") } }
+            ngx.say("at+jwt: ", check("at+jwt", at))
+            ngx.say("application/AT+JWT: ", check("application/AT+JWT", at))
+            ngx.say("JWT: ", check("JWT", at))
+            ngx.say("missing: ", check(nil, at))
+            ngx.say("number: ", check(123, at))
+            ngx.say("spec prefix: ", check("at+jwt", { __header = { typ = validators.typ_is("Application/At+Jwt") } }))
+            local any = { __header = { typ = validators.typ_is({ "JWT", "dpop+jwt" }) } }
+            ngx.say("list: ", check("jwt", any), " / ", check("at+jwt", any))
+            local opt = { __header = { typ = validators.opt_typ_is("at+jwt") } }
+            ngx.say("opt missing: ", check(nil, opt), " / opt wrong: ", check("JWT", opt))
+            for _, bad in ipairs({ {}, 1, { 1 } }) do
+                local ok, err = pcall(validators.typ_is, bad)
+                ngx.say(ok and "accepted" or err)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+at+jwt: true everything is awesome~ :p
+application/AT+JWT: true everything is awesome~ :p
+JWT: false Header 'typ' ('JWT') returned failure
+missing: false 'typ' header is required.
+number: false 'typ' is malformed.  Expected to be a string.
+spec prefix: true everything is awesome~ :p
+list: true everything is awesome~ :p / false Header 'typ' ('at+jwt') returned failure
+opt missing: true everything is awesome~ :p / opt wrong: false Header 'typ' ('JWT') returned failure
+Cannot create validator for non-string table expected.
+Cannot create validator for non-string or table expected.
+Cannot create validator for non-string table expected.
+--- no_error_log
+[error]
+
+
+
+=== TEST 12: __header validators combine with claim validators; malformed __header specs raise
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local token = hs_token("secret", { alg = "HS256", kid = "k1" }, { iss = "me" })
+            local spec = { iss = validators.equals("me"), __header = { kid = validators.equals("k1") } }
+            local obj = jwt:verify("secret", token, spec)
+            ngx.say("both pass: ", obj.verified, " ", obj.reason)
+
+            obj = jwt:verify("secret", token, { __header = { kid = validators.equals("k2") } })
+            ngx.say("kid mismatch: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify("secret", token, { __header = { kid = function() error({ reason = "custom" }) end } })
+            ngx.say("raising: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify("secret", token, { __header = { kid = function() error(nil) end } })
+            ngx.say("raising nil: ", obj.verified, " ", obj.reason)
+
+            -- header values aren't looked up in the payload and vice versa
+            obj = jwt:verify("secret", token, { kid = validators.required() })
+            ngx.say("payload kid: ", obj.verified, " ", obj.reason)
+
+            for _, bad in ipairs({ { __header = "x" }, { __header = { kid = "x" } }, { __header = { "x" } } }) do
+                local ok, err = pcall(jwt.verify, jwt, "secret", token, bad)
+                ngx.say(ok and "accepted" or err)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+both pass: true everything is awesome~ :p
+kid mismatch: false Header 'kid' ('k1') returned failure
+raising: false custom
+raising nil: false Header 'kid' validation failed
+payload kid: false 'kid' claim is required.
+Claim spec '__header' must be a table mapping header names to validator functions
+Header spec value must be a function - see jwt-validators.lua for helper functions
+Header spec value must be a function - see jwt-validators.lua for helper functions
+--- no_error_log
+[error]
+
+
+
+=== TEST 13: __header validators run only after the signature is verified
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local called = 0
+            local spec = { __header = { typ = function() called = called + 1; return false end } }
+            local token = hs_token("other-secret", { alg = "HS256", typ = "JWT" })
+            local obj = jwt:verify("secret", token, spec)
+            ngx.say(obj.verified, " ", obj.reason:match("^signature mismatch") or obj.reason, " called=", called)
+            obj = jwt:verify("other-secret", token, spec)
+            ngx.say(obj.verified, " ", obj.reason, " called=", called)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false signature mismatch called=0
+false Header 'typ' ('JWT') returned failure called=1
+--- no_error_log
+[error]
+
+
+
+=== TEST 14: __header validators on a JWE see the protected header
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local token = dir_token({ kid = "k1" })
+            local obj = jwt:verify(DIR_KEY, token, { __header = { kid = validators.equals("k1"), enc = validators.equals("A128CBC-HS256") } })
+            ngx.say(obj.verified, " ", obj.reason)
+            obj = jwt:verify(DIR_KEY, token, { __header = { kid = validators.equals("k2") } })
+            ngx.say(obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+true everything is awesome~ :p
+false Header 'kid' ('k1') returned failure
+--- no_error_log
+[error]
