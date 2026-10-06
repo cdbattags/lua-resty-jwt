@@ -32,6 +32,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [sign](#sign)
     * [verify](#verify)
     * [verify_with](#verify_with)
+    * [Keys: PEM, JWK, JWK Set and key objects](#keys-pem-jwk-jwk-set-and-key-objects)
     * [load and verify](#load--verify)
     * [set_alg_whitelist](#set_alg_whitelist)
     * [set_typ_whitelist](#set_typ_whitelist)
@@ -46,6 +47,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
 * [Verification](#verification)
     * [JWT Validators](#jwt-validators)
     * [Legacy/Timeframe options](#legacy-timeframe-options)
+* [Breaking changes in 0.4.0](#breaking-changes-in-040)
 * [Example](#examples)
 * [Installation](#installation)
 * [Testing With Docker](#testing-with-docker)
@@ -140,7 +142,7 @@ The `alg` argument specifies which signing algorithm to use (`HS256`, `HS512`, `
 
 `syntax: local jwt_obj = jwt:verify(key, jwt_token [, claim_spec [, ...]])`
 
-verify a jwt_token and returns a jwt_obj table.  `key` can be a pre-shared key (as a string), *or* a function which takes a single parameter (the value of `kid` from the header) and returns either the pre-shared key (as a string) for the `kid` or `nil` if the `kid` lookup failed.  This call will fail if you try to specify a function for `key` and there is no `kid` existing in the header.
+verify a jwt_token and returns a jwt_obj table.  `key` can be a pre-shared key (as a string), a PEM key or certificate, a JWK or JWK Set, a key object (see [Keys](#keys-pem-jwk-jwk-set-and-key-objects)), *or* a function which takes a single parameter (the value of `kid` from the header) and returns either the pre-shared key (as a string) for the `kid` or `nil` if the `kid` lookup failed.  This call will fail if you try to specify a function for `key` and there is no `kid` existing in the header.
 
 See [Verification](#verification) for details on the format of `claim_spec` parameters.
 
@@ -148,10 +150,10 @@ The signature is always checked before any `claim_spec` is evaluated, so validat
 
 The key must fit the token's `alg`:
 
-* `HS256`/`HS384`/`HS512`: a shared secret. Secrets containing PEM key material (`-----BEGIN`) are rejected, which prevents the RS/HS key-confusion attack where a token is MACed with a server's *public* key.
-* `RS*`/`PS*`: an RSA public key or certificate (PEM).
-* `ES256`/`ES384`/`ES512`: an EC public key or certificate on P-256/P-384/P-521 respectively.
-* `Ed25519`/`Ed448`/`EdDSA`: the matching OKP public key or certificate (`EdDSA` accepts either).
+* `HS256`/`HS384`/`HS512`: a shared secret, or an `oct` JWK. Empty secrets and asymmetric key material are rejected: PEM (`-----BEGIN`), DER keys and certificates, asymmetric JWKs, `pkey`/`x509` objects. This prevents the RS/HS key-confusion attack where a token is MACed with a server's *public* key.
+* `RS*`/`PS*`: an RSA public key or certificate (PEM), or an `RSA` JWK.
+* `ES256`/`ES384`/`ES512`: an EC public key or certificate on P-256/P-384/P-521 respectively, or an `EC` JWK with that `crv`.
+* `Ed25519`/`Ed448`/`EdDSA`: the matching OKP public key or certificate, or an `OKP` JWK (`EdDSA` accepts either curve).
 
 Otherwise verification fails with `key type mismatch: ...`. Even so, prefer pinning the algorithms you expect with [verify_with](#verify_with) or [set_alg_whitelist](#set_alg_whitelist).
 
@@ -174,6 +176,67 @@ local jwt_obj = jwt:verify_with(public_key, jwt_token, {
 -- an HS256 (or any non-RS256) token fails with "whitelist unsupported alg: HS256"
 ```
 
+
+## Keys: PEM, JWK, JWK Set and key objects
+
+Wherever a verification or decryption key is expected (`verify`, `verify_with`, `verify_jwt_obj`, `load_jwt`), you can pass:
+
+* a PEM (or, for EdDSA, DER) public key or certificate string, as before; for JWE, a PEM private key or the shared secret string;
+* a **JWK** ([RFC 7517](https://www.rfc-editor.org/rfc/rfc7517)) as a Lua table or JSON string. Supported `kty`: `RSA`, `EC` (`P-256`, `P-384`, `P-521`), `OKP` (`Ed25519`, `Ed448`, and `X25519`/`X448` for `ECDH-ES*` decryption), and `oct` for `HS*` and the symmetric JWE algorithms (`dir`, `A*KW`, `A*GCMKW`, `PBES2-*`);
+* a **JWK Set** `{ keys = { ... } }` as a Lua table or JSON string;
+* a `resty.openssl.pkey` or `resty.openssl.x509` object;
+* a key object returned by `jwt:load_key(...)` / `require("resty.jwt.jwk").load(...)`.
+
+HS signing (`jwt:sign`) also accepts an `oct` JWK. Asymmetric signing and JWE encryption still take PEM strings.
+
+The key always has to fit the token's `alg`. An `oct` key never verifies `RS*`/`PS*`/`ES*`/`EdDSA`, and an asymmetric key is never usable for `HS*` or a symmetric JWE algorithm (`key type mismatch: ...`). A JWK is checked further:
+
+* `alg`, if present, must equal the token's `alg` (RFC 7517 4.4);
+* `use`, if present, must be `sig` for JWS and `enc` for JWE;
+* `key_ops`, if present, must allow the operation: `verify` (or `sign` when signing); for JWE, `decrypt` for `dir`, `unwrapKey` for `A*KW`, `unwrapKey`/`decrypt` for `A*GCMKW` and `RSA-OAEP*`, and `deriveKey`/`deriveBits` for `ECDH-ES*` and `PBES2-*`;
+* a JWK used to *verify* a signature must be public. A JWK with private members (`d`, `p`, ...) is refused, because private key material in a verifier's key set (often a published JWKS) is a leak waiting to happen. JWE decryption needs the private JWK (`RSA-OAEP*`, `ECDH-ES*`). This check covers JWKs only: PEM strings, `pkey` objects and key objects loaded from PEM are used as given.
+
+Key selection in a **JWK Set**:
+
+1. If the token header has a `kid`, only keys with that `kid` are candidates.
+2. Candidates whose `kty`/`crv`, `use`, `key_ops` or `alg` don't fit the token are dropped.
+3. Exactly one remaining key is used. With none left, verification fails (`no key in the JWK Set matches ...`, or the reason the `kid`'s key was refused). With several left, it fails with `ambiguous key: ...`. Keys are never tried one after another.
+
+Members of a set with an unknown `kty` or malformed values are ignored (RFC 7517 5).
+
+```lua
+local jwt = require "resty.jwt"
+
+-- JWKS, e.g. read from a file or fetched by your own code (resty.jwt does not
+-- fetch keys over the network)
+local jwks = [[{"keys":[{"kty":"RSA","kid":"2024-01","use":"sig","n":"...","e":"AQAB"}]}]]
+local jwt_obj = jwt:verify_with(jwks, token, { algorithms = { "RS256" } })
+```
+
+### Reusable key objects
+
+Passing a PEM string, JWK or JWKS parses it on every call. On hot paths, parse it once per worker with `jwt:load_key(key)` (same as `require("resty.jwt.jwk").load(key)`) and reuse the returned key object. It accepts everything listed above and returns `nil, err` for keys it can't use; malformed members of a JWK Set are skipped with a `warn` log.
+
+```lua
+-- module level: runs once per worker
+local jwt = require "resty.jwt"
+local signing_keys = assert(jwt:load_key(io.open("/etc/nginx/jwks.json"):read("*a")))
+
+local _M = {}
+function _M.access()
+    local jwt_obj = jwt:verify_with(signing_keys, token, { algorithms = { "RS256", "ES256" } })
+    ...
+end
+return _M
+```
+
+For keys that change at runtime, cache the key objects in a [lua-resty-lrucache](https://github.com/openresty/lua-resty-lrucache) keyed by key id or source, and refresh them on your own schedule.
+
+### JWK thumbprint
+
+`syntax: local thumbprint, err = require("resty.jwt.jwk").thumbprint(jwk [, hash])`
+
+Computes the [RFC 7638](https://www.rfc-editor.org/rfc/rfc7638) thumbprint of a JWK (table or JSON string; `RSA`, `EC`, `OKP` or `oct`), base64url encoded. `hash` is a digest name and defaults to `"SHA256"`.
 
 ## load & verify
 
@@ -297,6 +360,8 @@ Registered header names and `b64` (RFC 7797 unencoded payloads are not supported
 `syntax: jwt:set_trusted_certs_file(filename)`
 
 Set a PEM file containing trusted CA certificates for `x5c`/`x5u` based verification of RS256/ES256 tokens.
+
+The file is read once per worker and the resulting certificate store is cached by path. Setting a different path drops the cache, so the next verification reads the file again. To pick up a changed file under the same path, reload nginx, or set another path and then the original one again.
 
 ## set_pbes2_max_count
 
@@ -435,6 +500,16 @@ to the old derivation, so tokens issued by 0.3.x can still be read while they ex
 
 [Back to TOC](#table-of-contents)
 
+
+# Breaking changes in 0.4.0
+
+Key handling:
+
+* `HS*` secrets must not be empty, and must not be DER-encoded keys or certificates (in addition to PEM). This applies to signing and verifying.
+* `HS*` and the symmetric JWE algorithms (`dir`, `A*KW`, `A*GCMKW`, `PBES2-*`) refuse asymmetric keys given as a JWK, JWK Set, `pkey` or `x509` object. The JWE algorithms also refuse empty, PEM and DER secrets. Previously a public key could be used as a `PBES2` password, so anyone holding the verifier's RSA public key could forge a JWE that `jwt:verify` accepted.
+* A string secret that is a JSON object with a `kty` or `keys` member is now treated as a JWK/JWK Set rather than as raw HMAC secret bytes.
+
+[Back to TOC](#table-of-contents)
 
 # Verification
 
