@@ -168,13 +168,15 @@ payload_ok: true
                 .. "keep any secret of yours\xe2\x80\x93closer than you keep it "
                 .. "yourself. But you cannot trust us to let you face trouble "
                 .. "alone, and go off without a word. We are your friends, Frodo."
-            -- the plaintext is not JSON, so decode it as a raw string
-            local j = jwt:new()
-            j:set_payload_decoder(function(s) return s end)
-            local obj = j:verify(key, token)
+            -- the plaintext is not JSON: the default decoder falls back to
+            -- the raw string
+            local obj = jwt:verify(key, token)
             ngx.say("verified: ", obj.verified, " ", obj.reason)
             ngx.say("zip: ", obj.header.zip)
             ngx.say("plaintext matches: ", obj.payload == expected)
+            local j = jwt:new()
+            j:set_payload_decoder(function(s) return s end)
+            ngx.say("custom decoder: ", j:verify(key, token).payload == expected)
         }
     }
 --- request
@@ -183,12 +185,59 @@ GET /t
 verified: true everything is awesome~ :p
 zip: DEF
 plaintext matches: true
+custom decoder: true
 --- no_error_log
 [error]
 
 
 
-=== TEST 5: a decompression bomb is rejected by the size cap, quickly
+=== TEST 5: non-JSON JWE plaintext falls back to the raw string, as for a JWS
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local key = string.rep("k", 32)
+            local function sign_raw(plaintext, zip)
+                local signer = jwt:new()
+                signer:set_payload_encoder(function() return plaintext end)
+                return signer:sign(key, {
+                    header = { alg = "dir", enc = "A256GCM", zip = zip },
+                    payload = {},
+                })
+            end
+            for _, zip in ipairs({ false, "DEF" }) do
+                local label = zip and "zip" or "plain"
+                local obj = jwt:verify(key, sign_raw("not json, just text", zip or nil))
+                ngx.say(label, " text: ", obj.verified, " ", type(obj.payload), " ", obj.payload)
+                obj = jwt:verify(key, sign_raw('{"foo":"bar"}', zip or nil))
+                ngx.say(label, " json: ", obj.verified, " ", type(obj.payload), " ", obj.payload.foo)
+                obj = jwt:verify(key, sign_raw("42", zip or nil))
+                ngx.say(label, " scalar: ", obj.verified, " ", type(obj.payload), " ", obj.payload)
+            end
+            -- a custom decoder's result is kept, even nil
+            local j = jwt:new()
+            j:set_payload_decoder(function() return nil end)
+            local obj = j:verify(key, sign_raw("not json, just text"))
+            ngx.say("custom nil: ", obj.verified, " ", type(obj.payload))
+        }
+    }
+--- request
+GET /t
+--- response_body
+plain text: true string not json, just text
+plain json: true table bar
+plain scalar: true number 42
+zip text: true string not json, just text
+zip json: true table bar
+zip scalar: true number 42
+custom nil: true nil
+--- no_error_log
+[error]
+
+
+
+=== TEST 6: a decompression bomb is rejected by the size cap, quickly
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -229,7 +278,7 @@ A128CBC-HS256: false failed to decrypt JWE fast: true
 
 
 
-=== TEST 6: set_zip_max_size sets an explicit cap and validates its argument
+=== TEST 7: set_zip_max_size sets an explicit cap and validates its argument
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -283,7 +332,7 @@ reset: true
 
 
 
-=== TEST 7: truncated and trailing-garbage DEFLATE streams fail generically
+=== TEST 8: truncated and trailing-garbage DEFLATE streams fail generically
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -329,7 +378,7 @@ empty: false failed to decrypt JWE
 
 
 
-=== TEST 8: unknown or malformed zip values are rejected before any key work
+=== TEST 9: unknown or malformed zip values are rejected before any key work
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -389,7 +438,7 @@ verify table: false invalid zip in JWE header
 
 
 
-=== TEST 9: zip is rejected on a JWS, when loading and when signing
+=== TEST 10: zip is rejected on a JWS, when loading and when signing
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -425,7 +474,7 @@ sign: false zip is not allowed in a JWS header
 
 
 
-=== TEST 10: tampered ciphertext or tag fails generically without inflating
+=== TEST 11: tampered ciphertext or tag fails generically without inflating
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -484,7 +533,7 @@ A128CBC-HS256 untampered: true
 
 
 
-=== TEST 11: a custom provider registered on an instance stays on that instance
+=== TEST 12: a custom provider registered on an instance stays on that instance
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -559,7 +608,7 @@ instance DEF sign: false failed to compress payload: disabled
 
 
 
-=== TEST 12: module-level registrations are inherited by instances, copy on write
+=== TEST 13: module-level registrations are inherited by instances, copy on write
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -590,7 +639,7 @@ module has no OTHER: true
 
 
 
-=== TEST 13: provider errors, raises and oversized results fail generically
+=== TEST 14: provider errors, raises and oversized results fail generically
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -646,7 +695,7 @@ bad name: false compression alg name must be a non-empty string
 
 
 
-=== TEST 14: register_zlib_compression adapts a lua-zlib-style module, bounded
+=== TEST 15: register_zlib_compression adapts a lua-zlib-style module, bounded
 --- http_config eval: $::HttpConfig
 --- config
     location /t {

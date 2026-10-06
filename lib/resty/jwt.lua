@@ -1019,6 +1019,19 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     payload = inflated
   end
 
+  -- A custom payload decoder's result is used as is. With the default one
+  -- the plaintext is JSON when it parses as JSON and otherwise the raw
+  -- string, as for a JWS payload (RFC 7516 allows any octet sequence).
+  local decoded
+  if self.payload_decoder then
+    decoded = self.payload_decoder(payload)
+  else
+    decoded = cjson_decode(payload)
+    if decoded == nil then
+      decoded = payload
+    end
+  end
+
   return {
     typ = str_const.JWE,
     internal = {
@@ -1027,7 +1040,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     },
     header = header,
     signature = signature_or_tag,
-    payload = get_payload_decoder(self)(payload)
+    payload = decoded
   }
 end
 
