@@ -279,3 +279,46 @@ GET /t
 false JWE was not authenticated
 --- no_error_log
 [error]
+
+
+
+=== TEST 7: missing or invalid enc / alg in a JWE header is rejected cleanly
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local key = string.rep("k", 32)
+            local rest = "." .. jwt:jwt_encode(string.rep("\0", 12))
+                      .. "." .. jwt:jwt_encode("ciphertext")
+                      .. "." .. jwt:jwt_encode(string.rep("\0", 16))
+            for _, h in ipairs({
+                '{"alg":"dir"}',
+                '{"alg":"dir","enc":null}',
+                '{"alg":"dir","enc":123}',
+                '{"alg":"dir","enc":["A256GCM"]}',
+                '{"alg":"dir","enc":"A1GCM"}',
+                '{"alg":"A256KW","enc":"A256KW"}',
+                '{"enc":"A256GCM"}',
+                '{"alg":1,"enc":"A256GCM"}',
+                '"just a string"',
+            }) do
+                local obj = jwt:verify(key, jwt:jwt_encode(h) .. "." .. rest)
+                ngx.say(obj.verified, " ", obj.reason)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+false missing or invalid enc in JWE header
+false missing or invalid enc in JWE header
+false missing or invalid enc in JWE header
+false missing or invalid enc in JWE header
+false unsupported enc: A1GCM
+false unsupported enc: A256KW
+false missing or invalid alg in JWE header
+false missing or invalid alg in JWE header
+false invalid header: Imp1c3QgYSBzdHJpbmci
+--- no_error_log
+[error]

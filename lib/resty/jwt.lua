@@ -554,11 +554,14 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
 
 
   local header = _M:jwt_decode(encoded_header, true)
-  if not header then
+  if type(header) ~= str_const.table then
     error({reason="invalid header: " .. encoded_header})
   end
 
   local alg = header.alg
+  if type(alg) ~= str_const.string then
+    error({reason="missing or invalid alg in JWE header"})
+  end
   if alg ~= str_const.DIR and alg ~= str_const.RSA_OAEP
       and alg ~= str_const.RSA_OAEP_256 and alg ~= str_const.RSA_OAEP_384
       and alg ~= str_const.RSA_OAEP_512 and alg ~= str_const.ECDH_ES
@@ -567,6 +570,14 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
       and alg ~= str_const.A128GCMKW and alg ~= str_const.A192GCMKW and alg ~= str_const.A256GCMKW
       and alg ~= str_const.PBES2_HS256_A128KW and alg ~= str_const.PBES2_HS384_A192KW and alg ~= str_const.PBES2_HS512_A256KW then
     error({reason="invalid algorithm: " .. alg})
+  end
+
+  local enc = header.enc
+  if type(enc) ~= str_const.string then
+    error({reason="missing or invalid enc in JWE header"})
+  end
+  if not jwe_enc_lengths[enc] then
+    error({reason="unsupported enc: " .. enc})
   end
 
   local key, enc_key, _
