@@ -852,6 +852,21 @@ local function symmetric_secret_rejection(secret, what)
   return nil
 end
 
+-- AES key wrap algorithms -> required key size in octets (RFC 7518 4.4,
+-- 4.7). The wrap mode must follow the alg, never the length of the key.
+local kw_key_lengths = {
+  [str_const.A128KW] = 16, [str_const.A192KW] = 24, [str_const.A256KW] = 32,
+  [str_const.A128GCMKW] = 16, [str_const.A192GCMKW] = 24, [str_const.A256GCMKW] = 32,
+}
+
+--@function raise unless `key` has the size required by the AES key wrap alg
+local function check_kw_key_len(alg, key)
+  local expected = kw_key_lengths[alg]
+  if expected and #key ~= expected then
+    error({reason="invalid key for " .. alg .. ": expected a " .. expected .. "-byte key"})
+  end
+end
+
 -- symmetric JWE key management algorithms: the key is a shared secret
 local symmetric_jwe_algs = {
   [str_const.DIR] = true,
@@ -914,6 +929,7 @@ local function get_jwe_key(secret, alg, header)
     if rejection then
       error({reason="invalid key for " .. alg .. ": " .. rejection})
     end
+    check_kw_key_len(alg, key)
     return key
   end
 
@@ -1541,9 +1557,11 @@ local function sign_jwe(self, secret_key, jwt_obj)
     key, mac_key, enc_key = derive_keys(enc)
     encrypted_key = aes_key_wrap(kek, key)
   elseif alg == str_const.A128KW or alg == str_const.A192KW or alg == str_const.A256KW then
+    check_kw_key_len(alg, secret_key)
     key, mac_key, enc_key = derive_keys(enc)
     encrypted_key = aes_key_wrap(secret_key, key)
   elseif alg == str_const.A128GCMKW or alg == str_const.A192GCMKW or alg == str_const.A256GCMKW then
+    check_kw_key_len(alg, secret_key)
     key, mac_key, enc_key = derive_keys(enc)
     local wrapped, kw_iv, kw_tag = aes_gcm_key_wrap(secret_key, key)
     encrypted_key = wrapped
