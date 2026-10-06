@@ -684,3 +684,88 @@ GET /t
 false true
 --- no_error_log
 [error]
+
+
+=== TEST 19: lifetime_grace_period applies to its own call only (no global leeway leak)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local now = ngx.now()
+            local token = jwt:sign("secret", {header={typ="JWT", alg="HS256"},
+                                              payload={exp=math.floor(now) - 100}})
+
+            local obj = jwt:verify("secret", token, {lifetime_grace_period=1000})
+            ngx.say("grace 1000: ", obj.verified)
+            -- the next verifications must not inherit the 1000s grace period
+            obj = jwt:verify("secret", token)
+            ngx.say("default: ", obj.verified)
+            obj = jwt:verify("secret", token, {require_exp_claim=true})
+            ngx.say("legacy no grace: ", obj.verified)
+            obj = jwt:verify("secret", token, {exp=validators.is_not_expired()})
+            ngx.say("validator: ", obj.verified)
+
+            -- an explicit system leeway is still the default ...
+            validators.set_system_leeway(1000)
+            obj = jwt:verify("secret", token, {exp=validators.is_not_expired()})
+            ngx.say("system 1000: ", obj.verified)
+            obj = jwt:verify("secret", token, {require_exp_claim=true})
+            ngx.say("legacy uses system: ", obj.verified)
+            -- ... which a per-call grace period overrides, without changing it
+            obj = jwt:verify("secret", token, {lifetime_grace_period=0})
+            ngx.say("grace 0: ", obj.verified)
+            obj = jwt:verify("secret", token, {exp=validators.is_not_expired()})
+            ngx.say("system still 1000: ", obj.verified)
+            validators.set_system_leeway(0)
+        }
+    }
+--- request
+GET /t
+--- response_body
+grace 1000: true
+default: false
+legacy no grace: false
+validator: false
+system 1000: true
+legacy uses system: true
+grace 0: false
+system still 1000: true
+--- no_error_log
+[error]
+
+
+=== TEST 20: per-validator leeway option for is_not_before/is_not_expired/is_at
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local validators = require "resty.jwt-validators"
+            validators.set_system_clock(function() return 1000 end)
+            local function run(v, val)
+                local ok, err = pcall(v, val, "c", "{}")
+                return ok and tostring(err) or "error"
+            end
+            ngx.say(run(validators.is_not_expired(), 990), " ", run(validators.is_not_expired({leeway=20}), 990))
+            ngx.say(run(validators.is_not_before(), 1010), " ", run(validators.opt_is_not_before({leeway=20}), 1010))
+            ngx.say(run(validators.is_at(), 1010), " ", run(validators.is_at({leeway=20}), 1010))
+            ngx.say(run(validators.opt_is_not_expired({}), 990))
+            for _, bad in ipairs({{leeway=-1}, {leeway="x"}, 5}) do
+                local ok, err = pcall(validators.is_not_expired, bad)
+                ngx.say(ok, " ", err)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+error true
+error true
+error true
+error
+false leeway must be a non-negative number
+false leeway must be a non-negative number
+false Cannot create validator for non-table options.
+--- no_error_log
+[error]

@@ -1442,9 +1442,12 @@ local function get_claim_spec_from_legacy_options(self, options)
     claim_spec[str_const.iss] = jwt_validators.equals_any_of(options[str_const.valid_issuers])
   end
 
-  if options[str_const.lifetime_grace_period] ~= nil then
-    jwt_validators.set_system_leeway(options[str_const.lifetime_grace_period] or 0)
+  -- the grace period applies to this call only (it used to mutate the
+  -- module-wide system leeway); without one, the system leeway is used
+  local grace_period = options[str_const.lifetime_grace_period]
+  local date_options = { leeway = grace_period ~= nil and (grace_period or 0) or nil }
 
+  if grace_period ~= nil then
     -- If we have a leeway set, then either an NBF or an EXP should also exist requireds are added below
     if options[str_const.require_nbf_claim] ~= true and options[str_const.require_exp_claim] ~= true then
       claim_spec[str_const.full_obj] = jwt_validators.require_one_of({ str_const.nbf, str_const.exp })
@@ -1461,15 +1464,15 @@ local function get_claim_spec_from_legacy_options(self, options)
 
   if options[str_const.lifetime_grace_period] ~= nil or options[str_const.require_nbf_claim] ~= nil or options[str_const.require_exp_claim] ~= nil then
     if options[str_const.require_nbf_claim] == true then
-      claim_spec[str_const.nbf] = jwt_validators.is_not_before()
+      claim_spec[str_const.nbf] = jwt_validators.is_not_before(date_options)
     else
-      claim_spec[str_const.nbf] = jwt_validators.opt_is_not_before()
+      claim_spec[str_const.nbf] = jwt_validators.opt_is_not_before(date_options)
     end
 
     if options[str_const.require_exp_claim] == true then
-      claim_spec[str_const.exp] = jwt_validators.is_not_expired()
+      claim_spec[str_const.exp] = jwt_validators.is_not_expired(date_options)
     else
-      claim_spec[str_const.exp] = jwt_validators.opt_is_not_expired()
+      claim_spec[str_const.exp] = jwt_validators.opt_is_not_expired(date_options)
     end
   end
 

@@ -314,14 +314,29 @@ end)
 
 
 --[[
-    A function to set the leeway (in seconds) used for is_not_before and is_not_expired.  The
-    default is to use 0 seconds
+    A function to set the default leeway (in seconds) used for is_not_before, is_not_expired
+    and is_at when the validator isn't given its own leeway.  The default is to use 0 seconds
 ]]--
 local system_leeway = 0
 function _M.set_system_leeway(leeway)
   ensure_is_type(leeway, "number", "leeway must be a non-negative number")
   ensure_is_non_negative(leeway, "leeway must be a non-negative number")
   system_leeway = leeway
+end
+
+-- Local helper returning the leeway option of a date validator (a table such as
+-- { leeway = 30 }).  nil means "use the system leeway at validation time".
+local function get_leeway_option(options)
+  if options == nil then
+    return nil
+  end
+  ensure_is_type(options, "table", messages.wrong_type_validator, "table", "options")
+  local leeway = options.leeway
+  if leeway ~= nil then
+    ensure_is_type(leeway, "number", "leeway must be a non-negative number")
+    ensure_is_non_negative(leeway, "leeway must be a non-negative number")
+  end
+  return leeway
 end
 
 
@@ -360,14 +375,17 @@ end
 
 --[[
     Returns a validator that checks if the current time is not before the tested value
-    within the system's leeway.  This means that:
-      val <= (system_clock() + system_leeway).
+    within the leeway.  This means that:
+      val <= (system_clock() + leeway).
+    The optional options table may set { leeway = seconds } for this validator only;
+    otherwise the system leeway (see set_system_leeway) is used.
 ]]--
-define_validator("is_not_before", function()
+define_validator("is_not_before", function(options)
+  local leeway = get_leeway_option(options)
   return format_date_on_error(
      _M.chain(validate_is_date,
         function(val)
-           return val and less_than_or_equal_function(val, (system_clock() + system_leeway))
+           return val and less_than_or_equal_function(val, (system_clock() + (leeway or system_leeway)))
         end),
      "not valid until"
   )
@@ -376,14 +394,17 @@ end)
 
 --[[
     Returns a validator that checks if the current time is not equal to or after the
-    tested value within the system's leeway.  This means that:
-      val > (system_clock() - system_leeway).
+    tested value within the leeway.  This means that:
+      val > (system_clock() - leeway).
+    The optional options table may set { leeway = seconds } for this validator only;
+    otherwise the system leeway (see set_system_leeway) is used.
 ]]--
-define_validator("is_not_expired", function()
+define_validator("is_not_expired", function(options)
+  local leeway = get_leeway_option(options)
   return format_date_on_error(
      _M.chain(validate_is_date,
        function(val)
-          return val and greater_than_function(val, (system_clock() - system_leeway))
+          return val and greater_than_function(val, (system_clock() - (leeway or system_leeway)))
        end),
      "expired at"
   )
@@ -391,18 +412,21 @@ end)
 
 --[[
     Returns a validator that checks if the current time is the same as the tested value
-    within the system's leeway.  This means that:
-      val >= (system_clock() - system_leeway) and val <= (system_clock() + system_leeway).
+    within the leeway.  This means that:
+      val >= (system_clock() - leeway) and val <= (system_clock() + leeway).
+    The optional options table may set { leeway = seconds } for this validator only;
+    otherwise the system leeway (see set_system_leeway) is used.
 ]]--
-define_validator("is_at", function()
-  local now = system_clock()
+define_validator("is_at", function(options)
+  local leeway = get_leeway_option(options)
   return format_date_on_error(
     _M.chain(validate_is_date,
              function(val)
                 local now = system_clock()
+                local l = leeway or system_leeway
                 return val and
-                   greater_than_or_equal_function(val, now - system_leeway) and
-                   less_than_or_equal_function(val, now + system_leeway)
+                   greater_than_or_equal_function(val, now - l) and
+                   less_than_or_equal_function(val, now + l)
              end),
     "is only valid at"
   )
