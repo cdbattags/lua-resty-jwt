@@ -337,3 +337,61 @@ default: false invalid key for PBES2-HS256+A128KW: PEM key material cannot be us
 uncapped: false invalid key for PBES2-HS256+A128KW: PEM key material cannot be used as a symmetric key fast: true
 --- no_error_log
 [error]
+
+
+
+=== TEST 10: asymmetric JWE encryption takes only a PEM string
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function read(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local c = f:read("*a"); f:close(); return c
+            end
+            local keys = {
+                { "nil", nil },
+                { "table", {} },
+                { "RSA key object", jwt:load_key(read("cert-pubkey.pem")) },
+                { "EC key object", jwt:load_key(read("ec_cert_pubkey.pem")) },
+            }
+            for _, alg in ipairs({ "RSA-OAEP", "RSA-OAEP-256", "ECDH-ES", "ECDH-ES+A128KW" }) do
+                for _, k in ipairs(keys) do
+                    local ok, err = pcall(jwt.sign, jwt, k[2], { header = { alg = alg, enc = "A128GCM" }, payload = { foo = "bar" } })
+                    ngx.say(alg, " ", k[1], ": ", tostring(ok), " ", ok and "" or tostring(err.reason))
+                end
+            end
+            -- PEM strings still encrypt, and the tokens decrypt
+            for _, c in ipairs({ { "RSA-OAEP-256", "cert.pem", "cert-key.pem" }, { "RSA-OAEP-256", "cert-pubkey.pem", "cert-key.pem" },
+                                 { "ECDH-ES", "ec_cert_pubkey.pem", "ec_cert-key.pem" }, { "ECDH-ES+A128KW", "ec_cert_pubkey.pem", "ec_cert-key.pem" } }) do
+                local token = jwt:sign(read(c[2]), { header = { alg = c[1], enc = "A128GCM" }, payload = { foo = "bar" } })
+                ngx.say(c[1], " with ", c[2], ": ", tostring(jwt:verify(read(c[3]), token).verified))
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+RSA-OAEP nil: false invalid key for RSA-OAEP: expected a PEM string
+RSA-OAEP table: false invalid key for RSA-OAEP: expected a PEM string
+RSA-OAEP RSA key object: false invalid key for RSA-OAEP: expected a PEM string
+RSA-OAEP EC key object: false invalid key for RSA-OAEP: expected a PEM string
+RSA-OAEP-256 nil: false invalid key for RSA-OAEP-256: expected a PEM string
+RSA-OAEP-256 table: false invalid key for RSA-OAEP-256: expected a PEM string
+RSA-OAEP-256 RSA key object: false invalid key for RSA-OAEP-256: expected a PEM string
+RSA-OAEP-256 EC key object: false invalid key for RSA-OAEP-256: expected a PEM string
+ECDH-ES nil: false invalid key for ECDH-ES: expected a PEM string
+ECDH-ES table: false invalid key for ECDH-ES: expected a PEM string
+ECDH-ES RSA key object: false invalid key for ECDH-ES: expected a PEM string
+ECDH-ES EC key object: false invalid key for ECDH-ES: expected a PEM string
+ECDH-ES+A128KW nil: false invalid key for ECDH-ES+A128KW: expected a PEM string
+ECDH-ES+A128KW table: false invalid key for ECDH-ES+A128KW: expected a PEM string
+ECDH-ES+A128KW RSA key object: false invalid key for ECDH-ES+A128KW: expected a PEM string
+ECDH-ES+A128KW EC key object: false invalid key for ECDH-ES+A128KW: expected a PEM string
+RSA-OAEP-256 with cert.pem: true
+RSA-OAEP-256 with cert-pubkey.pem: true
+ECDH-ES with ec_cert_pubkey.pem: true
+ECDH-ES+A128KW with ec_cert_pubkey.pem: true
+--- no_error_log
+[error]

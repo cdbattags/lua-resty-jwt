@@ -215,6 +215,10 @@ Other:
   0.3.x passed the key to `pkey.new`, which generated a random RSA key for it, so `sign`
   returned a token labeled EdDSA that carried an RSA signature, which no key the caller
   held could verify.
+- JWE encryption with RSA-OAEP, RSA-OAEP-256/384/512, ECDH-ES or ECDH-ES+A*KW and a key that
+  isn't a string (`nil`, a table such as a JWK, or a key object) raises `invalid key for
+  <alg>: expected a PEM string`. 0.3.x raised a raw Lua error for RSA-OAEP, and for ECDH-ES
+  generated a random RSA key before failing with `unsupported EC curve NID: nil`.
 - RS/PS/ES signing failures raise a clean `{ reason = ... }` instead of failing later in
   `jwt_encode(nil)`, and so does a failed RSA-OAEP encryptor in JWE signing.
 - A JWE header with a missing or non-string `alg`/`enc` gives a clean reason.

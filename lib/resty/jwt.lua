@@ -995,6 +995,15 @@ local symmetric_jwe_algs = {
   [str_const.PBES2_HS512_A256KW] = true,
 }
 
+-- asymmetric JWE key management algorithms: the key is the recipient's PEM
+-- public key (or, for RSA-OAEP, certificate)
+local asymmetric_jwe_algs = {
+  [str_const.ECDH_ES] = true,
+  [str_const.ECDH_ES_A128KW] = true, [str_const.ECDH_ES_A192KW] = true, [str_const.ECDH_ES_A256KW] = true,
+  [str_const.RSA_OAEP] = true, [str_const.RSA_OAEP_256] = true, [str_const.RSA_OAEP_384] = true,
+  [str_const.RSA_OAEP_512] = true,
+}
+
 --@function select the key for a token from a key object, JWK, JWK Set, pkey
 -- or x509 secret (see resty.jwt.jwk)
 --@param purpose "verify", "sign" or "decrypt"
@@ -1678,12 +1687,15 @@ local function sign_jwe(self, secret_key, jwt_obj)
   local enc = header.enc
   local alg = header.alg
 
+  -- encryption takes only string keys. pkey.new() generates a fresh random
+  -- key when given nil or a table, so nothing else may reach it
+  local symmetric = symmetric_jwe_algs[alg]
+  if (symmetric or asymmetric_jwe_algs[alg]) and type(secret_key) ~= str_const.string then
+    error({reason="invalid key for " .. alg .. ": expected a " .. (symmetric and "string" or "PEM string")})
+  end
   -- the same rule as for decryption: asymmetric key material, or an empty
   -- string, is never a shared secret or a password
-  if symmetric_jwe_algs[alg] then
-    if type(secret_key) ~= str_const.string then
-      error({reason="invalid key for " .. alg .. ": expected a string"})
-    end
+  if symmetric then
     local rejection = symmetric_secret_rejection(secret_key, "a symmetric key")
     if rejection then
       error({reason="invalid key for " .. alg .. ": " .. rejection})
