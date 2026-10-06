@@ -376,14 +376,14 @@ false JWK key_ops do not permit alg RSA-OAEP
 false alg RSA-OAEP requires a private key
 false alg ECDH-ES requires a private key
 false key type mismatch: alg RSA-OAEP requires an RSA key
-false key type mismatch: alg ECDH-ES requires an EC or X25519/X448 key
-false key type mismatch: alg ECDH-ES requires an EC or X25519/X448 key
+false key type mismatch: alg ECDH-ES requires an EC key
+false key type mismatch: alg ECDH-ES requires an EC key
 false failed to decrypt JWE
 --- no_error_log
 [error]
 
 
-=== TEST 7: X25519 private JWK decrypts an ECDH-ES JWE
+=== TEST 7: X25519/X448 keys are refused for ECDH-ES (EC epk only) and for signatures
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -391,52 +391,23 @@ false failed to decrypt JWE
             local cjson = require "cjson"
             local jwt = require "resty.jwt"
             local pkey = require "resty.openssl.pkey"
-            local cipher = require "resty.openssl.cipher"
-            local digest = require "resty.openssl.digest"
-            local rand = require "resty.openssl.rand"
-
-            local function be32(n)
-                return string.char(bit.band(bit.rshift(n, 24), 255), bit.band(bit.rshift(n, 16), 255),
-                    bit.band(bit.rshift(n, 8), 255), bit.band(n, 255))
-            end
-
-            -- sign_jwe has no X25519 support, so build the JWE by hand (RFC 7518 4.6)
-            local function x25519_jwe(recipient, payload)
-                local eph = assert(pkey.new({ type = "X25519" }))
-                local epk = cjson.decode(eph:tostring("public", "JWK"))
-                local h = jwt:jwt_encode(cjson.encode({ alg = "ECDH-ES", enc = "A128GCM", epk = epk }))
-                local z = assert(eph:derive(recipient))
-                local other = be32(7) .. "A128GCM" .. be32(0) .. be32(0) .. be32(128)
-                local cek = assert(digest.new("SHA256"):final(be32(1) .. z .. other)):sub(1, 16)
-                local iv = rand.bytes(12)
-                local c = assert(cipher.new("aes-128-gcm"))
-                local ct = assert(c:encrypt(cek, iv, payload, false, h))
-                local tag = assert(c:get_aead_tag(16))
-                return h .. ".." .. jwt:jwt_encode(iv) .. "." .. jwt:jwt_encode(ct) .. "." .. jwt:jwt_encode(tag)
-            end
-
-            local priv = assert(pkey.new({ type = "X25519" }))
-            local priv_jwk = cjson.decode(priv:tostring("private", "JWK"))
-            local pub = assert(pkey.new(priv:tostring("public", "PEM")))
-            local token = x25519_jwe(pub, '{"foo":"x25519"}')
-            local obj = jwt:verify(priv_jwk, token)
-            ngx.say(obj.verified, " ", obj.reason, " ", obj.payload and obj.payload.foo)
-            -- as a pkey object as well
-            obj = jwt:verify(priv, token)
-            ngx.say(obj.verified, " ", obj.reason, " ", obj.payload and obj.payload.foo)
-            -- another X25519 key fails authentication
-            local other = cjson.decode(assert(pkey.new({ type = "X25519" })):tostring("private", "JWK"))
-            show(jwt:verify(other, token))
-            -- an X25519 JWK can't verify signatures
-            show(jwt:verify(cjson.decode(priv:tostring("public", "JWK")), sign("ed25519-key.pem", { alg = "EdDSA" })))
+            local token = sign("ec_cert_pubkey.pem", { alg = "ECDH-ES", enc = "A128GCM" })
+            local x25519 = assert(pkey.new({ type = "X25519" }))
+            show(jwt:verify(cjson.decode(x25519:tostring("private", "JWK")), token))
+            show(jwt:verify(x25519, token))
+            show(jwt:verify(assert(jwt:load_key(x25519:tostring("private", "PEM"))), token))
+            local x448 = assert(pkey.new({ type = "X448" }))
+            show(jwt:verify(cjson.decode(x448:tostring("private", "JWK")), token))
+            show(jwt:verify(cjson.decode(x25519:tostring("public", "JWK")), sign("ed25519-key.pem", { alg = "EdDSA" })))
         }
     }
 --- request
 GET /t
 --- response_body
-true everything is awesome~ :p x25519
-true everything is awesome~ :p x25519
-false failed to decrypt JWE
+false key type mismatch: alg ECDH-ES requires an EC key
+false key type mismatch: alg ECDH-ES requires an EC key
+false key type mismatch: alg ECDH-ES requires an EC key
+false key type mismatch: alg ECDH-ES requires an EC key
 false key type mismatch: alg EdDSA requires an Ed25519 or Ed448 key
 --- no_error_log
 [error]
