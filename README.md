@@ -152,7 +152,7 @@ sign a table_of_jwt to a jwt_token.
 
 The `alg` header specifies which signing algorithm to use: `HS256`, `HS384`, `HS512`, `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512`, `Ed25519`, `Ed448` or `EdDSA`. `alg: none` is not supported. A header with `enc` makes a JWE instead, see [sign JWE](#sign-jwe).
 
-The key is the shared secret for `HS*` (a string, an `oct` JWK, or a function returning the secret for the header's `kid`), and a PEM private key for the others: RSA for `RS*`/`PS*`, EC on the curve of the alg for `ES*` (P-256, P-384, P-521), Ed25519 or Ed448 for the EdDSA algorithms. `sign` raises an error table `{ reason = ... }` when it fails.
+The key is the shared secret for `HS*` (a string, an `oct` JWK, or a function returning the secret for the header's `kid`), and a PEM private key (for EdDSA, PEM or DER) for the others: RSA for `RS*`/`PS*`, EC on the curve of the alg for `ES*` (P-256, P-384, P-521), Ed25519 or Ed448 for the EdDSA algorithms. `sign` raises an error table `{ reason = ... }` when it fails.
 
 The header is serialized with its parameters in a fixed order (`typ`, `alg`, `enc`, `zip`, `kid`, then the others sorted by name), so the same header always produces the same encoded header, whichever way the table was built. The payload is serialized by the payload encoder (cjson by default) in whatever order it produces.
 
@@ -231,7 +231,7 @@ Wherever a verification or decryption key is expected (`verify`, `verify_with`, 
 * a `resty.openssl.pkey` or `resty.openssl.x509` object;
 * a key object returned by `jwt:load_key(...)` / `require("resty.jwt.jwk").load(...)`.
 
-HS signing (`jwt:sign`) also accepts an `oct` JWK. Asymmetric signing and JWE encryption still take PEM strings.
+HS signing (`jwt:sign`) also accepts an `oct` JWK. Asymmetric signing and JWE encryption still take strings: a PEM private key (for EdDSA, PEM or DER) to sign, the recipient's PEM public key for `RSA-OAEP*`/`ECDH-ES*` (or a PEM certificate for `RSA-OAEP*`), and the shared secret or password for the symmetric JWE algorithms.
 
 The key always has to fit the token's `alg`. An `oct` key never verifies `RS*`/`PS*`/`ES*`/`EdDSA`, and an asymmetric key is never usable for `HS*` or a symmetric JWE algorithm (`key type mismatch: ...`). A JWK is checked further:
 
@@ -429,7 +429,7 @@ While a file is set, the `key` passed to `verify` is ignored for these algorithm
 
 With `x5u`, the URL comes from the token, so whoever made the token chooses it. The function set with `jwt:set_x5u_content_retriever(function(x5u, iss, kid) ... end)` receives it as is and must fetch only URLs on its own allowlist (scheme and host), or it becomes a server-side request forgery (SSRF) vector.
 
-The file is read once per worker and the resulting certificate store is cached by path, so edits to the file under the same path are not picked up until nginx reloads. When an object (the module, or one `jwt.new()` instance) replaces the path it set earlier with another one, the store cached for the replaced path is dropped, so setting another path and then the original one again on the same object re-reads the file. A fresh instance has no path of its own, so the per-request pattern `local j = jwt.new(); j:set_trusted_certs_file(path)` drops nothing and keeps using the cached store. On an instance, `nil` removes the instance's own path, and the module's setting applies again.
+The file is read once per worker and the resulting certificate store is cached by path, so edits to the file under the same path are not picked up until nginx reloads, or until the same object sets another path and then this one again. When an object (the module, or one `jwt.new()` instance) replaces the path it set earlier with another one, the store cached for the replaced path is dropped, so setting another path and then the original one again on the same object re-reads the file. A fresh instance has no path of its own, so the per-request pattern `local j = jwt.new(); j:set_trusted_certs_file(path)` drops nothing and keeps using the cached store. On an instance, `nil` removes the instance's own path, and the module's setting applies again.
 
 ## set_pbes2_max_count
 
