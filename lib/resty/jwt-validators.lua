@@ -433,4 +433,21 @@ define_validator("is_at", function(options)
 end)
 
 
+--[[
+    Normalizes a "typ" header value for comparison.  Media type names are case
+    insensitive, and RFC 7515 section 4.1.9 says a value without a "/" is to be
+    treated as if "application/" were prepended, so "application/at+jwt",
+    "AT+JWT" and "at+jwt" all normalize to "at+jwt".  Returns nil for a
+    non-string value.
+]]--
+function _M.normalize_typ(typ)
+  if type(typ) ~= "string" then
+    return nil
+  end
+  typ = string.lower(typ)
+  local short = string.match(typ, "^application/([^/]*)$")
+  return short or typ
+end
+
+
 return _M
