@@ -39,6 +39,7 @@ lua-resty-jwt - [JWT](http://self-issued.info/docs/draft-jones-json-web-token-01
     * [set_trusted_certs_file](#set_trusted_certs_file)
     * [set_pbes2_max_count](#set_pbes2_max_count)
     * [sign JWE](#sign-jwe)
+    * [set_zip_max_size](#set_zip_max_size)
     * [register_zlib_compression](#register_zlib_compression)
     * [register_compression_alg](#register_compression_alg)
     * [set_legacy_ecdh_kw_kdf](#set_legacy_ecdh_kw_kdf)
@@ -314,29 +315,34 @@ sign a table_of_jwt to a jwt_token.
 The `alg` argument specifies which key management algorithm to use (`dir`, `RSA-OAEP`, `RSA-OAEP-256`, `ECDH-ES`).
 The `enc` argument specifies which content encryption algorithm to use (`A128CBC-HS256`, `A256CBC-HS512`, `A128GCM`, `A256GCM`).
 
-The optional `zip` header parameter (RFC 7516 §4.1.3) enables payload compression
-before encryption. **Compression is disabled by default** because compress-then-encrypt
-leaks information about the plaintext through the resulting ciphertext length
-(CRIME / BREACH family of attacks), and a token that arrives with a `zip` header
-will be rejected with `unsupported zip: …` unless a handler has been registered.
+The optional `zip` header parameter (RFC 7516 §4.1.3) compresses the payload
+before it is encrypted. The only registered value is `DEF` (raw DEFLATE,
+RFC 1951). It is built in: `resty.jwt-zlib` binds the system zlib through the
+LuaJIT FFI (OpenResty's nginx already links zlib), so nothing extra has to be
+installed. If zlib cannot be loaded, `DEF` is unsupported until a handler is
+registered with [register_zlib_compression](#register_zlib_compression) or
+[register_compression_alg](#register_compression_alg).
 
-To opt in to the built-in `DEF` handler (raw DEFLATE per RFC 1951), install
-[lua-zlib](https://github.com/brimworks/lua-zlib) and hand the module to
-`jwt:register_zlib_compression` once during startup. Passing the module
-explicitly keeps `lua-zlib` an optional dependency of this library and makes
-the opt-in step unambiguous:
+**Only set `zip` when you have considered the leak.** Compress-then-encrypt
+reveals information about the plaintext through the ciphertext length (the
+CRIME / BREACH family of attacks). Do not compress payloads where
+attacker-influenced data sits next to secrets. A JWE is only ever compressed
+when its header asks for it.
 
-```
-luarocks install lua-zlib
-```
+When verifying a `zip` JWE:
 
-```lua
-local jwt = require "resty.jwt"
-jwt:register_zlib_compression(require "zlib")
-```
-
-Alternatively, register your own handler (pure-Lua, FFI, or a different alg
-name entirely) via `jwt:register_compression_alg` — see below.
+* An unknown or non-string `zip` value is rejected (`unsupported zip: …` /
+  `invalid zip in JWE header`) before any key is unwrapped or derived.
+* Content is decompressed only after the authentication tag or MAC has been
+  verified and the content decrypted.
+* The decompressed size is capped at max(250 KiB, 10 × the compressed size),
+  as in go-jose (cf. CVE-2024-28180). Use
+  [set_zip_max_size](#set_zip_max_size) for an explicit cap. Decompression
+  stops as soon as the cap is passed, so a "zip bomb" never allocates more.
+* Oversized, truncated or invalid DEFLATE data and trailing bytes after the
+  stream are rejected with the generic `failed to decrypt JWE` reason.
+* `zip` is a JWE-only parameter, so a JWS carrying it is rejected (`zip is not
+  allowed in a JWS header`), and so is signing one.
 
 ### sample of table_of_jwt ###
 
@@ -358,15 +364,26 @@ When a JWE fails authentication or decryption (bad tag or MAC, wrong key, tamper
 }
 ```
 
+## set_zip_max_size
+
+`syntax: jwt:set_zip_max_size(max_size)`
+
+Set the largest decompressed payload, in bytes, accepted from a `zip` JWE. The
+default is max(250 KiB, 10 × the compressed size). An explicit value replaces
+both, so a larger value admits bigger payloads and a smaller one a tighter
+cap. Larger payloads fail with `failed to decrypt JWE`. Pass `nil` to restore
+the default.
+
 ## register_zlib_compression
 
 `syntax: jwt:register_zlib_compression(zlib_module)`
 
-Register the `DEF` (raw DEFLATE per RFC 1951) compression handler using a
-caller-supplied [lua-zlib](https://github.com/brimworks/lua-zlib)-compatible
-module. Passing the module explicitly keeps `lua-zlib` an optional dependency
-and makes JWE compression opt-in; see the security note under
-[sign-jwe](#sign-jwe).
+Bind `DEF` to a caller-supplied
+[lua-zlib](https://github.com/brimworks/lua-zlib)-compatible module instead of
+the built-in FFI binding, e.g. where the FFI is not available. The module stays
+a caller-owned dependency. Input is fed to lua-zlib in small pieces so the
+size cap still applies, and lua-zlib's end-of-stream flag and input count are
+checked to reject truncated streams and trailing data.
 
 ```lua
 jwt:register_zlib_compression(require "zlib")
@@ -377,26 +394,30 @@ jwt:register_zlib_compression(require "zlib")
 `syntax: jwt:register_compression_alg(name, { deflate = fn, inflate = fn })`
 
 Register or override the handler used for a given JWE `zip` header value. Use
-this to swap in an alternate DEFLATE implementation (pure-Lua, FFI, etc.) or to
-support a non-standard `zip` value. No `zip` handler is registered out of the
-box — see [register_zlib_compression](#register_zlib_compression) for the
-standard `DEF` case.
+this to swap in an alternate DEFLATE implementation or to support a
+non-standard `zip` value.
 
-`deflate` and `inflate` each take a byte string and must return either a byte
-string on success, or `nil, err` on failure.
+`deflate(data)` takes a byte string. `inflate(data, max_size)` also receives
+the size cap and must not produce more than `max_size` bytes; it should stop
+as soon as the output would pass it. Both return a byte string on success,
+or `nil, err` on failure. Results larger than `max_size`, errors and raised
+errors all fail verification with `failed to decrypt JWE` (`err` is logged
+at `ngx.DEBUG`).
 
 ```lua
 jwt:register_compression_alg("DEF", {
     deflate = function(data) return my_compress(data) end,
-    inflate = function(data) return my_decompress(data) end,
+    inflate = function(data, max_size) return my_bounded_decompress(data, max_size) end,
 })
 ```
 
-For a concrete reference implementation, see how
-[`register_zlib_compression`](#register_zlib_compression) wires `lua-zlib` into
-this API in `lib/resty/jwt.lua` — it builds the `{ deflate, inflate }` pair
-around the zlib streaming API (with `windowBits = -15` for raw DEFLATE per
-RFC 1951) and hands it straight to `register_compression_alg`.
+Registrations apply to the object they are made on. Called on the module
+(`jwt:register_compression_alg`), they are inherited by `jwt:new()` instances
+that have not registered their own. Called on an instance, they affect only
+that instance. The built-in `DEF` handler itself is never modified.
+
+For reference implementations, see `lib/resty/jwt-zlib.lua` (bounded streaming
+inflate over the FFI) and `register_zlib_compression` in `lib/resty/jwt.lua`.
 
 [Back to TOC](#table-of-contents)
 
