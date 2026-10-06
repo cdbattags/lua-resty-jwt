@@ -198,3 +198,84 @@ A128GCMKW A128GCM: 16 16 true
 A192GCMKW A192GCM: 16 16 true
 --- no_error_log
 [error]
+
+
+
+=== TEST 5: CBC-HS MAC is checked before decryption: tampered ciphertext and tampered tag fail identically
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function flip_last_byte(token, idx)
+                local parts = {}
+                for p in (token .. "."):gmatch("([^.]*)%.") do
+                    parts[#parts + 1] = p
+                end
+                local raw = jwt:jwt_decode(parts[idx])
+                raw = raw:sub(1, -2) .. string.char(bit.bxor(raw:byte(-1), 1))
+                parts[idx] = jwt:jwt_encode(raw)
+                return table.concat(parts, ".")
+            end
+            for _, c in ipairs({
+                { enc = "A128CBC-HS256", key = string.rep("k", 32) },
+                { enc = "A192CBC-HS384", key = string.rep("k", 48) },
+                { enc = "A256CBC-HS512", key = string.rep("k", 64) },
+            }) do
+                local token = jwt:sign(c.key, {
+                    header = { alg = "dir", enc = c.enc },
+                    payload = { foo = "bar" },
+                })
+                local ok = jwt:verify(c.key, token)
+                -- flipping the last ciphertext byte corrupts the CBC padding;
+                -- it must be caught by the MAC, not reported as a padding error
+                local bad_ct = jwt:verify(c.key, flip_last_byte(token, 4))
+                local bad_tag = jwt:verify(c.key, flip_last_byte(token, 5))
+                local bad_iv = jwt:verify(c.key, flip_last_byte(token, 3))
+                ngx.say(c.enc, ": ", ok.verified, " ", ok.reason)
+                ngx.say(c.enc, " ct: ", bad_ct.verified, " ", bad_ct.reason)
+                ngx.say(c.enc, " same reason: ", bad_ct.reason == bad_tag.reason
+                        and bad_ct.reason == bad_iv.reason)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+A128CBC-HS256: true everything is awesome~ :p
+A128CBC-HS256 ct: false signature mismatch
+A128CBC-HS256 same reason: true
+A192CBC-HS384: true everything is awesome~ :p
+A192CBC-HS384 ct: false signature mismatch
+A192CBC-HS384 same reason: true
+A256CBC-HS512: true everything is awesome~ :p
+A256CBC-HS512 ct: false signature mismatch
+A256CBC-HS512 same reason: true
+--- no_error_log
+[error]
+
+
+
+=== TEST 6: hand-built JWE objects are not reported as verified
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local obj = jwt:verify_jwt_obj("k", {
+                typ = "JWE",
+                valid = true,
+                verified = false,
+                header = { alg = "dir", enc = "A256GCM" },
+                payload = { foo = "bar" },
+                internal = { authenticated = {} },
+            })
+            ngx.say(obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false JWE was not authenticated
+--- no_error_log
+[error]

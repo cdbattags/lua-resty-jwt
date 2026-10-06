@@ -9,6 +9,7 @@ local digest = require "resty.openssl.digest"
 local openssl_rand = require "resty.openssl.rand"
 local kdf = require "resty.openssl.kdf"
 local utils = require "resty.utils"
+local bit = require "bit"
 
 local _M = { _VERSION = "0.3.2" }
 
@@ -20,6 +21,7 @@ local string_rep = string.rep
 local string_format = string.format
 local string_sub = string.sub
 local string_char = string.char
+local string_byte = string.byte
 local table_concat = table.concat
 local ngx_encode_base64 = ngx.encode_base64
 local ngx_decode_base64 = ngx.decode_base64
@@ -32,6 +34,8 @@ local type = type
 local pcall = pcall
 local assert = assert
 local setmetatable = setmetatable
+local bxor = bit.bxor
+local bor = bit.bor
 local pairs = pairs
 
 -- define string constants to avoid string garbage collection
@@ -456,6 +460,43 @@ local function hmac_digest(enc, mac_key, message)
   end
 end
 
+-- AL: 64-bit big-endian bit length of the AAD (RFC 7518 5.2.2.1)
+-- https://tools.ietf.org/html/rfc7516#appendix-B.3
+local function binlen(s)
+  if type(s) ~= 'string' then return end
+
+  local len = 8 * #s
+
+  return string_char(len / 0x0100000000000000 % 0x100)
+      .. string_char(len / 0x0001000000000000 % 0x100)
+      .. string_char(len / 0x0000010000000000 % 0x100)
+      .. string_char(len / 0x0000000100000000 % 0x100)
+      .. string_char(len / 0x0000000001000000 % 0x100)
+      .. string_char(len / 0x0000000000010000 % 0x100)
+      .. string_char(len / 0x0000000000000100 % 0x100)
+      .. string_char(len / 0x0000000000000001 % 0x100)
+end
+
+--@function constant time string comparison (length mismatch returns false)
+local function constant_time_equals(a, b)
+  if type(a) ~= str_const.string or type(b) ~= str_const.string or #a ~= #b then
+    return false
+  end
+  local acc = 0
+  for i = 1, #a do
+    acc = bor(acc, bxor(string_byte(a, i), string_byte(b, i)))
+  end
+  return acc == 0
+end
+
+--@function compute the A*CBC-HS* authentication tag (RFC 7518 5.2.2.1)
+--@return first half of HMAC(mac_key, AAD || IV || ciphertext || AL)
+local function cbc_hs_auth_tag(enc, mac_key, aad, iv, cipher_text)
+  local mac_input = table_concat({aad, iv, cipher_text, binlen(aad)})
+  local mac = hmac_digest(enc, mac_key, mac_input)
+  return string_sub(mac, 1, #mac / 2)
+end
+
 --@function dervice keys: it generates key if null based on encryption algorithm
 --@param encryption type
 --@param secret key
@@ -493,6 +534,10 @@ local function derive_keys(enc, secret_key)
   local enc_key = string_sub(secret_key, mac_key_len + 1)
   return secret_key, mac_key, enc_key
 end
+
+-- marks a JWE object whose tag/MAC was verified by parse_jwe; not forgeable
+-- by callers building jwt objects by hand
+local JWE_AUTHENTICATED = {}
 
 local function get_payload_encoder(self)
     return self.payload_encoder or cjson_encode
@@ -647,27 +692,38 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   if not signature_or_tag or #signature_or_tag ~= lengths.tag then
     error({reason="invalid JWE authentication tag length"})
   end
-  local basic_jwe = {
-    typ = str_const.JWE,
-    internal = {
-      encoded_header = encoded_header,
-      cipher_text = cipher_text,
-      key = key,
-      iv = iv
-    },
-    header = header,
-    signature = signature_or_tag
-  }
+  if not cipher_text then
+    error({reason="invalid JWE ciphertext"})
+  end
+
+  local mac_key
+  key, mac_key, enc_key = derive_keys(header.enc, key)
+
+  -- A*CBC-HS*: verify the MAC before touching the ciphertext so that padding
+  -- errors can never be observed (no padding oracle). GCM authenticates the
+  -- tag inside decrypt_payload.
+  if mac_key ~= str_const.empty then
+    local expected_tag = cbc_hs_auth_tag(header.enc, mac_key, encoded_header, iv, cipher_text)
+    if not constant_time_equals(expected_tag, signature_or_tag) then
+      error({reason="signature mismatch"})
+    end
+  end
 
   local payload, err = decrypt_payload(enc_key, cipher_text, header.enc, iv, encoded_header, signature_or_tag)
   if err  then
     error({reason="failed to decrypt payload: " .. err})
-
-  else
-    basic_jwe.payload = get_payload_decoder(self)(payload)
-    basic_jwe.internal.json_payload=payload
   end
-  return basic_jwe
+
+  return {
+    typ = str_const.JWE,
+    internal = {
+      authenticated = JWE_AUTHENTICATED,
+      json_payload = payload
+    },
+    header = header,
+    signature = signature_or_tag,
+    payload = get_payload_decoder(self)(payload)
+  }
 end
 
 -- @function parse_jwt
@@ -800,23 +856,6 @@ function _M.set_x5u_content_retriever(self, retriever_function)
 end
 
 _M.x5u_content_retriever = nil
-
--- https://tools.ietf.org/html/rfc7516#appendix-B.3
--- TODO: do it in lua way
-local function binlen(s)
-  if type(s) ~= 'string' then return end
-
-  local len = 8 * #s
-
-  return string_char(len / 0x0100000000000000 % 0x100)
-      .. string_char(len / 0x0001000000000000 % 0x100)
-      .. string_char(len / 0x0000010000000000 % 0x100)
-      .. string_char(len / 0x0000000100000000 % 0x100)
-      .. string_char(len / 0x0000000001000000 % 0x100)
-      .. string_char(len / 0x0000000000010000 % 0x100)
-      .. string_char(len / 0x0000000000000100 % 0x100)
-      .. string_char(len / 0x0000000000000001 % 0x100)
-end
 
 --@function sign jwe payload
 --@param secret key : if used pre-shared or RSA key
@@ -953,10 +992,7 @@ local function sign_jwe(self, secret_key, jwt_obj)
   end
 
   if not auth_tag then
-    local encoded_header_length = binlen(encoded_header)
-    local mac_input = table_concat({encoded_header , iv, cipher_text , encoded_header_length})
-    local mac = hmac_digest(enc, mac_key, mac_input)
-    auth_tag = string_sub(mac, 1, #mac/2)
+    auth_tag = cbc_hs_auth_tag(enc, mac_key, encoded_header, iv, cipher_text)
   end
 
   local jwe_table = {encoded_header, _M:jwt_encode(encrypted_key), _M:jwt_encode(iv),
@@ -1101,22 +1137,11 @@ end
 --@param jwt object
 --@return jwt object with reason whether verified or not
 local function verify_jwe_obj(jwt_obj)
-
-  local enc = jwt_obj[str_const.header][str_const.enc]
-  if enc ~= str_const.A256GCM and enc ~= str_const.A192GCM and enc ~= str_const.A128GCM then -- tag gets authenticated during decryption
-    local _, mac_key, _ = derive_keys(jwt_obj.header.enc, jwt_obj.internal.key)
-    local encoded_header = jwt_obj.internal.encoded_header
-
-    local encoded_header_length = binlen(encoded_header)
-    local mac_input = table_concat({encoded_header , jwt_obj.internal.iv, jwt_obj.internal.cipher_text,
-                                    encoded_header_length})
-    local mac = hmac_digest(jwt_obj.header.enc, mac_key,  mac_input)
-    local auth_tag = string_sub(mac, 1, #mac/2)
-
-    if auth_tag ~= jwt_obj.signature then
-      jwt_obj[str_const.reason] = "signature mismatch: " ..
-      tostring(jwt_obj[str_const.signature])
-    end
+  -- the authentication tag (GCM) or MAC (CBC-HS) was already verified in
+  -- parse_jwe, before decryption
+  local internal = jwt_obj.internal
+  if type(internal) ~= str_const.table or internal.authenticated ~= JWE_AUTHENTICATED then
+    jwt_obj[str_const.reason] = "JWE was not authenticated"
   end
 
   jwt_obj.internal = nil
