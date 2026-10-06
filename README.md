@@ -546,6 +546,12 @@ Key handling:
 * `HS*` and the symmetric JWE algorithms (`dir`, `A*KW`, `A*GCMKW`, `PBES2-*`) refuse asymmetric keys given as a JWK, JWK Set, `pkey` or `x509` object. The JWE algorithms also refuse empty, PEM and DER secrets. Previously a public key could be used as a `PBES2` password, so anyone holding the verifier's RSA public key could forge a JWE that `jwt:verify` accepted.
 * A string secret that is a JSON object with a `kty` or `keys` member is now treated as a JWK/JWK Set rather than as raw HMAC secret bytes.
 
+Token output and validators:
+
+* `sign` emits header parameters in a fixed order (see [sign](#sign)), so the encoded header (and so the token) can differ from what earlier versions produced for the same input. Such tokens still verify everywhere; this only matters if you compare tokens byte for byte with ones signed before 0.4.0.
+* Validators receive the verified payload as a 4th argument. `jwt_json` is no longer built for validators that cannot read it (those of `resty.jwt-validators`, and functions declaring fewer than three parameters).
+* HMAC is computed with `resty.openssl.hmac`; `resty.jwt` no longer loads the vendored `resty.hmac`.
+
 [Back to TOC](#table-of-contents)
 
 # Verification
