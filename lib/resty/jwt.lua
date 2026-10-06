@@ -1174,7 +1174,12 @@ end
 --- Initialize the trusted certs
 -- During RS256 verify, we'll make sure the
 -- cert was signed by one of these
+-- The file is read once per worker and cached; setting a different path
+-- drops the cache, so the next verification re-reads the file.
 function _M.set_trusted_certs_file(self, filename)
+  if filename ~= self.trusted_certs_file then
+    evp.clear_trust_store_cache()
+  end
   self.trusted_certs_file = filename
 end
 _M.trusted_certs_file = nil

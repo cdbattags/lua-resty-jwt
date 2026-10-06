@@ -835,6 +835,38 @@ function Cert.get_public_key(self)
     return evp_pkey, nil
 end
 
+-- Per worker cache of the X509_STOREs built from trusted certs files, keyed by
+-- path, so the file isn't re-read on every verification. Cleared by
+-- clear_trust_store_cache() (resty.jwt does so when the trusted certs file
+-- path changes).
+local trust_stores = {}
+
+--- Number of times a trusted certs file was read (test hook)
+_M.trust_store_loads = 0
+
+--- Drop the cached trusted cert stores; the files are re-read on next use
+function _M.clear_trust_store_cache()
+    trust_stores = {}
+end
+
+local function _get_trust_store(trusted_cert_file)
+    local store = trust_stores[trusted_cert_file]
+    if store ~= nil then
+        return store
+    end
+    store = _C.X509_STORE_new()
+    if store == nil then
+        return _err()
+    end
+    ffi_gc(store, _C.X509_STORE_free)
+    _M.trust_store_loads = _M.trust_store_loads + 1
+    if _C.X509_STORE_load_locations(store, trusted_cert_file, nil) ~=1 then
+        return _err()
+    end
+    trust_stores[trusted_cert_file] = store
+    return store
+end
+
 --- Verify the Certificate is trusted
 -- @param trusted_cert_file File path to a list of PEM encoded trusted certificates
 -- @return bool, error_string
@@ -845,13 +877,9 @@ function Cert.verify_trust(self, trusted_cert_file)
     if self.x509 == nil then
         return false, "No certificate loaded"
     end
-    local store = _C.X509_STORE_new()
+    local store, err = _get_trust_store(trusted_cert_file)
     if store == nil then
-        return _err(false)
-    end
-    ffi_gc(store, _C.X509_STORE_free)
-    if _C.X509_STORE_load_locations(store, trusted_cert_file, nil) ~=1 then
-        return _err(false)
+        return false, err
     end
 
     local ctx = _C.X509_STORE_CTX_new()
