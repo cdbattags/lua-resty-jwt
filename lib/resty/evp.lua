@@ -44,6 +44,7 @@ ffi.cdef[[
 unsigned long ERR_get_error(void);
 void ERR_clear_error(void);
 const char * ERR_reason_error_string(unsigned long e);
+void ERR_error_string_n(unsigned long e, char *buf, size_t len);
 
 // Basic IO
 typedef struct bio_st BIO;
@@ -227,7 +228,16 @@ local function _err(ret)
     local errs = {}
     local code = _C.ERR_get_error()
     while code ~= 0 do
-        table.insert(errs, 1, ffi_string(_C.ERR_reason_error_string(code)))
+        -- Some codes (e.g. system library errors) have no reason string
+        local reason = _C.ERR_reason_error_string(code)
+        if reason ~= nil then
+            reason = ffi_string(reason)
+        else
+            local buf = ffi_new("char[?]", 256)
+            _C.ERR_error_string_n(code, buf, 256)
+            reason = ffi_string(buf)
+        end
+        table.insert(errs, 1, reason)
         code = _C.ERR_get_error()
     end
 
