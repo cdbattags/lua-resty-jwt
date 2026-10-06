@@ -182,7 +182,7 @@ local jwt_obj = jwt:verify_with(public_key, jwt_token, {
 Wherever a verification or decryption key is expected (`verify`, `verify_with`, `verify_jwt_obj`, `load_jwt`), you can pass:
 
 * a PEM (or, for EdDSA, DER) public key or certificate string, as before; for JWE, a PEM private key or the shared secret string;
-* a **JWK** ([RFC 7517](https://www.rfc-editor.org/rfc/rfc7517)) as a Lua table or JSON string. Supported `kty`: `RSA`, `EC` (`P-256`, `P-384`, `P-521`), `OKP` (`Ed25519`, `Ed448`, and `X25519`/`X448` for `ECDH-ES*` decryption), and `oct` for `HS*` and the symmetric JWE algorithms (`dir`, `A*KW`, `A*GCMKW`, `PBES2-*`);
+* a **JWK** ([RFC 7517](https://www.rfc-editor.org/rfc/rfc7517)) as a Lua table or JSON string. Supported `kty`: `RSA`, `EC` (`P-256`, `P-384`, `P-521`), `OKP` (`Ed25519`, `Ed448`; `ECDH-ES*` with `X25519`/`X448` isn't supported yet, `ECDH-ES*` takes `EC` keys only), and `oct` for `HS*` and the symmetric JWE algorithms (`dir`, `A*KW`, `A*GCMKW`, `PBES2-*`);
 * a **JWK Set** `{ keys = { ... } }` as a Lua table or JSON string;
 * a `resty.openssl.pkey` or `resty.openssl.x509` object;
 * a key object returned by `jwt:load_key(...)` / `require("resty.jwt.jwk").load(...)`.
