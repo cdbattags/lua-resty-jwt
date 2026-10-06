@@ -287,3 +287,53 @@ raw length: 132 verifies: true
 empty: false invalid jwt string: empty signature | evp: nil signature length != 2 * order length
 --- no_error_log
 [error]
+
+
+
+=== TEST 9: a PBES2 JWE made with the RSA public key as the password does not verify
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local cjson = require "cjson"
+            local jwt = require "resty.jwt"
+            local f = io.open("/lua-resty-jwt/testcerts/cert-pubkey.pem")
+            local pub = f:read("*a"); f:close()
+            -- made by v0.3.2 with jwt:sign(<cert-pubkey.pem>, { header = { alg =
+            -- "PBES2-HS256+A128KW", enc = "A128GCM" }, payload = { sub = "admin" } });
+            -- v0.3.2's jwt:verify(<cert-pubkey.pem>, token) returns verified = true
+            local token = "eyJlbmMiOiJBMTI4R0NNIiwicDJzIjoiXzRNOTEwb2FYSGlKbG54SXlPQ2VSdyIsImFsZyI6IlBCRVMyLUhTMjU2K0ExMjhLVyIsInAyYyI6NDA5Nn0"
+                .. ".SiSxkGW1ROFQaYJNwui7sRBrbqVB3GjH.1H6m4yDhuCS-vbN_.5Ms0zP0M3sNt7q__y3z0.zD-N2Is5qeo"
+            local obj = jwt:verify(pub, token)
+            ngx.say("verify: ", tostring(obj.verified), " ", obj.reason)
+            obj = jwt:verify_with(pub, token, { algorithms = { "RS256" } })
+            ngx.say("verify_with RS256: ", tostring(obj.verified), " ", obj.reason)
+
+            -- the same token asking for 10^9 PBKDF2 iterations: the key is refused
+            -- before any key derivation, even where the p2c cap would allow it
+            local encoded_header, rest = token:match("^([^.]+)(%..+)$")
+            local header = cjson.decode(jwt:jwt_decode(encoded_header))
+            header.p2c = 1000000000
+            local slow = jwt:jwt_encode(cjson.encode(header)) .. rest
+            ngx.say("p2c: ", cjson.decode(jwt:jwt_decode(slow:match("^[^.]+"))).p2c)
+            local uncapped = jwt:new()
+            uncapped:set_pbes2_max_count(1000000000)
+            for _, c in ipairs({ { "default", jwt }, { "uncapped", uncapped } }) do
+                ngx.update_time()
+                local start = ngx.now()
+                obj = c[2]:verify(pub, slow)
+                ngx.update_time()
+                ngx.say(c[1], ": ", tostring(obj.verified), " ", obj.reason, " fast: ", tostring(ngx.now() - start < 0.5))
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+verify: false invalid key for PBES2-HS256+A128KW: PEM key material cannot be used as a symmetric key
+verify_with RS256: false whitelist unsupported alg: PBES2-HS256+A128KW
+p2c: 1000000000
+default: false invalid key for PBES2-HS256+A128KW: PEM key material cannot be used as a symmetric key fast: true
+uncapped: false invalid key for PBES2-HS256+A128KW: PEM key material cannot be used as a symmetric key fast: true
+--- no_error_log
+[error]
