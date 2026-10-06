@@ -15,7 +15,7 @@ local jwt_zlib = require "resty.jwt-zlib"
 local jwk = require "resty.jwt.jwk"
 local bit = require "bit"
 
-local _M = { _VERSION = "0.3.2" }
+local _M = { _VERSION = "0.4.0" }
 
 local mt = {
     __index = _M

@@ -1,6 +1,7 @@
 use strict;
 use warnings;
 use Test::More;
+use File::Find;
 
 # _VERSION in lib/resty/jwt.lua is the single source of truth for the release
 # version: OPM reads it from main_module, and the git tag (vX.Y.Z) must match
@@ -21,6 +22,13 @@ my @versions = $jwt =~ /_VERSION\s*=\s*"([^"]*)"/g;
 is(scalar @versions, 1, 'lib/resty/jwt.lua declares _VERSION exactly once');
 my $version = $versions[0] // '';
 like($version, qr/^\d+\.\d+\.\d+$/, "_VERSION \"$version\" is MAJOR.MINOR.PATCH");
+
+# no other module carries a version of its own that could go stale
+my @modules;
+find(sub { push @modules, $File::Find::name if /\.lua$/ }, 'lib');
+for my $module (sort grep { $_ ne 'lib/resty/jwt.lua' } @modules) {
+    unlike(slurp($module), qr/_VERSION\s*=/, "$module declares no _VERSION");
+}
 
 my $rockspec = slurp('lua-resty-jwt-dev-0.rockspec');
 like($rockspec, qr/^version\s*=\s*'dev-0'\s*$/m,

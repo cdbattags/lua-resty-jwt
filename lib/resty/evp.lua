@@ -6,7 +6,7 @@ local ffi_string = ffi.string
 local ffi_cast = ffi.cast
 local _C = ffi.C
 
-local _M = { _VERSION = "0.2.4" }
+local _M = {}
 
 local ngx = ngx
 
