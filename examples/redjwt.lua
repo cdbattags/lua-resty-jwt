@@ -17,7 +17,7 @@ local function redkey(kid)
     if ngx.var.redauth then
         local ok, err = red:auth(ngx.var.redauth)
         if not ok then
-            ngx.log("failed to authenticate: ", err)
+            ngx.log(ngx.ERR, "failed to authenticate: ", err)
             return nil
         end
     end
@@ -25,7 +25,7 @@ local function redkey(kid)
     if ngx.var.reddb then
         local ok, err = red:select(ngx.var.reddb)
         if not ok then
-            ngx.log("failed to select db: ", ngx.var.reddb, " ", err)
+            ngx.log(ngx.ERR, "failed to select db: ", ngx.var.reddb, " ", err)
             return nil
         end
     end
@@ -52,17 +52,17 @@ end
 
 local jwt = require "resty.jwt"
 
-local jwt_obj = jwt:load_jwt(ngx.var.arg_jwt)
+local jwt_token = ngx.var.arg_jwt
+-- load_jwt only parses the token, to read its kid; it is verified below
+local jwt_obj = jwt:load_jwt(jwt_token)
 if not jwt_obj.valid then
-  ngx.status = ngx.HTTP_BAD_REQUEST
-  ngx.say("invalid jwt")
-  ngx.exit(ngx.HTTP_OK)
+  ngx.log(ngx.INFO, "jwt rejected: ", jwt_obj.reason)
+  return ngx.exit(ngx.HTTP_UNAUTHORIZED)
 end
 local kid = jwt_obj.header.kid
-if kid == nil then
-  ngx.status = ngx.HTTP_BAD_REQUEST
-  ngx.say("missing kid")
-  ngx.exit(ngx.HTTP_OK)
+if type(kid) ~= "string" then
+  ngx.log(ngx.INFO, "jwt rejected: missing or invalid kid")
+  return ngx.exit(ngx.HTTP_UNAUTHORIZED)
 end
 
 local jwt_key_dict= ngx.shared.jwt_key_dict
@@ -76,20 +76,23 @@ if key == nil then
 end
 
 if key == ngx.null then
-    -- no such key
-    ngx.status = ngx.HTTP_UNAUTHORIZED
-    ngx.say("your kid: [", kid ,"] is not valid")
-    ngx.exit(ngx.HTTP_OK)
+    -- no such key. The kid comes from the client: log it, don't echo it
+    ngx.log(ngx.INFO, "jwt rejected: unknown kid ", kid)
+    return ngx.exit(ngx.HTTP_UNAUTHORIZED)
 elseif key == nil then
-    -- get key error
-    ngx.say("something wrong with our server. I'll let you pass this time")
+    -- get key error: fail closed rather than letting the request through
+    return ngx.exit(ngx.HTTP_SERVICE_UNAVAILABLE)
 else
-    local verified = jwt:verify_jwt_obj(key, jwt_obj, 30)
+    -- always pin the algorithms you issue tokens with
+    local verified = jwt:verify_with(key, jwt_token, {
+        algorithms = { "HS256" },
+        required_claims = { "exp" },
+    })
 
     if not verified.verified then
-        ngx.status = ngx.HTTP_UNAUTHORIZED
-        ngx.say(jwt_obj.reason)
-        ngx.exit(ngx.HTTP_OK)
+        -- never send reason to the client: it can contain parts of the token
+        ngx.log(ngx.INFO, "jwt rejected: ", verified.reason)
+        return ngx.exit(ngx.HTTP_UNAUTHORIZED)
     end
 
     if flush then
