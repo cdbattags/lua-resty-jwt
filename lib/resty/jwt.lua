@@ -1046,6 +1046,11 @@ local function parse_jwt(self, encoded_header, encoded_payload, signature)
     error({reason=crit_err})
   end
 
+  -- "zip" is a JWE-only header parameter (RFC 7516 4.1.3)
+  if header.zip ~= nil then
+    error({reason="zip is not allowed in a JWS header"})
+  end
+
   -- Try JSON decoding first; fall back to raw string for non-JSON payloads (RFC 7515)
   local payload = _M:jwt_decode(encoded_payload, true, true)
   if not payload then
@@ -1609,6 +1614,9 @@ function _M.sign(self, secret_key, jwt_obj)
 
   if jwt_obj.typ == str_const.JWE or (jwt_obj.typ == nil and (typ == str_const.JWE or jwt_obj.header.enc)) then
     return sign_jwe(self, secret_key, jwt_obj)
+  end
+  if jwt_obj[str_const.header].zip ~= nil then
+    error({reason="zip is not allowed in a JWS header"})
   end
   -- header alg check
   local raw_header = get_raw_part(str_const.header, jwt_obj)
