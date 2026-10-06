@@ -51,8 +51,13 @@ Verification and keys:
   asymmetric JWKs or key objects are rejected for HMAC, when signing and when verifying.
 - Algorithms are bound to key types: RS*/PS* require RSA, ES256/384/512 require
   P-256/P-384/P-521, Ed25519/Ed448 require the matching OKP key and EdDSA either one.
-  Mismatches fail with `key type mismatch: …`. Signing with ES256/384/512 also requires
-  the matching curve, so the library no longer produces mislabeled tokens.
+  Mismatches fail with `key type mismatch: …`. Signing with ES256/384/512, Ed25519, Ed448
+  or EdDSA also requires the matching key, so the library no longer produces mislabeled
+  tokens (0.3.x, for example, signed an `Ed448` token with an Ed25519 key).
+- Signing with Ed25519, Ed448 or EdDSA accepts only a PEM or DER private key string. `nil`,
+  a table (such as a JWK) or a key object fails with `failed to load EdDSA private key:
+  expected a PEM or DER string`, and a public key with `failed to load EdDSA private key: a
+  public key cannot sign` (see Fixed).
 - Signatures (and JWE authentication) are verified **before** claims are validated. A
   signature failure always wins. Validators receive `jwt_json` with `verified=true` and
   no JWE internals.
@@ -132,6 +137,8 @@ Reason strings:
     be string, function, JWK or key object)`;
   - a key of the wrong type or curve for the alg gives `key type mismatch: …` (0.3.x: for
     example `signature length != 2 * order length`, or a crash);
+  - signing Ed25519/Ed448/EdDSA with a public key gives `failed to load EdDSA private key:
+    a public key cannot sign` (0.3.x: `EdDSA sign error: …`);
   - JWE authentication and decryption failures give `failed to decrypt JWE` (see JWE).
 
 Other:
@@ -204,6 +211,10 @@ Other:
 - Claims of non-object payloads are treated as absent: a string payload no longer
   satisfied `validators.required()` for claims such as `sub`, and number or boolean
   payloads no longer raise a Lua error.
+- `sign` with Ed25519, Ed448 or EdDSA and a `nil`, table or key-object key raises an error.
+  0.3.x passed the key to `pkey.new`, which generated a random RSA key for it, so `sign`
+  returned a token labeled EdDSA that carried an RSA signature, which no key the caller
+  held could verify.
 - RS/PS/ES signing failures raise a clean `{ reason = ... }` instead of failing later in
   `jwt_encode(nil)`, and so does a failed RSA-OAEP encryptor in JWE signing.
 - A JWE header with a missing or non-string `alg`/`enc` gives a clean reason.

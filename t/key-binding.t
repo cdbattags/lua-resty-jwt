@@ -148,7 +148,7 @@ ES384 with P-384: true
 
 
 
-=== TEST 6: EdDSA signing refuses a missing key, a table, a public key and the wrong curve
+=== TEST 6: EdDSA signing takes only a PEM or DER private key of the alg's curve
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -178,6 +178,10 @@ ES384 with P-384: true
                 local token = jwt:sign(read(c[2] .. "-key.pem"), { header = { typ = "JWT", alg = c[1] }, payload = { foo = "bar" } })
                 ngx.say(c[1], " with ", c[2], ": ", tostring(jwt:verify(read(c[2] .. "-pubkey.pem"), token).verified))
             end
+            -- a DER private key string signs too
+            local der = require("resty.openssl.pkey").new(read("ed448-key.pem")):tostring("private", "DER")
+            local token = jwt:sign(der, { header = { typ = "JWT", alg = "Ed448" }, payload = { foo = "bar" } })
+            ngx.say("Ed448 with DER ed448: ", tostring(jwt:verify(read("ed448-pubkey.pem"), token).verified))
         }
     }
 --- request
@@ -196,6 +200,7 @@ Ed25519 with ed25519: true
 Ed448 with ed448: true
 EdDSA with ed25519: true
 EdDSA with ed448: true
+Ed448 with DER ed448: true
 --- no_error_log
 [error]
 
