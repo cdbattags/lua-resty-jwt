@@ -1416,9 +1416,9 @@ local function sign_jwe(self, secret_key, jwt_obj)
       [str_const.RSA_OAEP_512] = evp.CONST.SHA512_DIGEST,
     }
     local digest_alg = oaep_digest[alg]
-    local rsa_encryptor = evp.RSAEncryptor:new(cert, evp.CONST.RSA_PKCS1_OAEP_PADDING, digest_alg)
-    if err then
-        error("failed to create rsa object for encryption ".. err)
+    local rsa_encryptor, enc_err = evp.RSAEncryptor:new(cert, evp.CONST.RSA_PKCS1_OAEP_PADDING, digest_alg)
+    if not rsa_encryptor then
+        error({reason="failed to create rsa object for encryption: " .. (enc_err or "")})
     end
     key, mac_key, enc_key = derive_keys(enc)
     encrypted_key, err = rsa_encryptor:encrypt(key)
