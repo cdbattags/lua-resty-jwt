@@ -610,7 +610,7 @@ leading dot: false invalid jwt string
 doubled first dot: false invalid jwt string
 doubled second dot: false invalid jwt string
 quadrupled dot: false invalid jwt string
-all dots doubled: false invalid jwt string: empty ciphertext
+all dots doubled: false invalid algorithm: HS256
 all dots: false invalid jwt string: empty header
 empty: false invalid jwt string
 six parts: false invalid jwt string
@@ -712,8 +712,8 @@ GET /t
 --- response_body
 header: false invalid jwt string: empty header
 iv: false invalid jwt string: empty initialization vector
-ciphertext: false invalid jwt string: empty ciphertext
+ciphertext: false invalid JWE ciphertext
 tag: false invalid jwt string: empty authentication tag
-tag junk: false invalid JWE authentication tag length
+tag junk: false invalid jwt string: non-canonical base64url in authentication tag
 --- no_error_log
 [error]

@@ -152,7 +152,7 @@ invalid jwt string
                 function(kid) return kid == "lua-resty-kid" and "lua-resty-jwt" or nil end,
                 "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6Imx1YS1yZXN0eS1raWQifQ" ..
                 ".eyJmb28iOiJiYXIifQ" ..
-                ".signature"
+                ".c2lnbmF0dXJl"
             )
             ngx.say(jwt_obj["verified"])
             ngx.say(jwt_obj["reason"])
@@ -162,7 +162,7 @@ invalid jwt string
 GET /t
 --- response_body
 false
-signature mismatch: signature
+signature mismatch: c2lnbmF0dXJl
 --- no_error_log
 [error]
 

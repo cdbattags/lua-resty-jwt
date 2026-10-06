@@ -916,7 +916,9 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   if not signature_or_tag or #signature_or_tag ~= lengths.tag then
     error({reason="invalid JWE authentication tag length"})
   end
-  if not cipher_text then
+  -- AES-GCM allows an empty plaintext (and so an empty ciphertext); AES-CBC
+  -- ciphertext is always a non-empty multiple of the block size
+  if not cipher_text or (lengths.iv == 16 and (#cipher_text == 0 or #cipher_text % 16 ~= 0)) then
     error({reason="invalid JWE ciphertext"})
   end
 
@@ -990,8 +992,22 @@ end
 -- @param token string
 -- @return jwt/jwe tables
 local jws_part_names = { "header", "payload", "signature" }
--- part 2 (encrypted key) is checked against the alg in parse_jwe
-local jwe_part_names = { "header", nil, "initialization vector", "ciphertext", "authentication tag" }
+-- part 2 (encrypted key) is checked against the alg in parse_jwe; part 4
+-- (ciphertext) may be empty for AES-GCM and is checked against enc there
+local jwe_part_names = { "header", "encrypted key", "initialization vector", "ciphertext", "authentication tag" }
+local jwe_part_may_be_empty = { [2] = true, [4] = true }
+
+--@function check that a token part uses the one canonical base64url form:
+-- URL-safe alphabet only, no padding and no non-zero trailing bits (RFC 7515
+-- section 2). Without this, one token has many accepted spellings, which
+-- defeats denylists and replay caches keyed on the token string.
+local function is_canonical_b64url(s)
+  if s:find("[^A-Za-z0-9_%-]") or #s % 4 == 1 then
+    return false
+  end
+  local decoded = _M:jwt_decode(s)
+  return decoded ~= nil and _M:jwt_encode(decoded) == s
+end
 
 local function parse(self, secret, token_str)
   if type(token_str) ~= str_const.string then
@@ -1008,9 +1024,15 @@ local function parse(self, secret, token_str)
   else
     error({reason=str_const.invalid_jwt})
   end
+  local is_jwe = num_parts == 5
   for i = 1, num_parts do
-    if part_names[i] and parts[i] == str_const.empty then
-      error({reason=str_const.invalid_jwt .. ": empty " .. part_names[i]})
+    local part = parts[i]
+    if part == str_const.empty then
+      if not (is_jwe and jwe_part_may_be_empty[i]) then
+        error({reason=str_const.invalid_jwt .. ": empty " .. part_names[i]})
+      end
+    elseif not is_canonical_b64url(part) then
+      error({reason=str_const.invalid_jwt .. ": non-canonical base64url in " .. part_names[i]})
     end
   end
 

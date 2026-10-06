@@ -107,7 +107,7 @@ table eyJmb28iOiJiYXIifQ2: {"foo":"bar"}
             local jwt_obj = jwt:load_jwt(
                 "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9" ..
                 ".eyJmb28iOiJiYXIifQ" ..
-                ".signature"
+                ".c2lnbmF0dXJl"
             )
             ngx.say("alg is: ", jwt_obj.header.alg ," foo is: ", jwt_obj.payload.foo)
         ';
@@ -129,7 +129,7 @@ alg is: HS256 foo is: bar
             local jwt_obj = jwt:load_jwt(
                 "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9" ..
                 ".eyJmb28iOiJiYXIifQbad-format" ..
-                ".signature"
+                ".c2lnbmF0dXJl"
             )
             ngx.say("valid: ", jwt_obj.valid)
             ngx.say("payload_type: ", type(jwt_obj.payload))
@@ -172,7 +172,7 @@ invalid jwt string
             local jwt = require "resty.jwt"
             local jwt_str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9" ..
                 ".eyJmb28iOiJiYXIifQ" ..
-                ".signature"
+                ".c2lnbmF0dXJl"
             local jwt_obj = jwt:load_jwt(jwt_str)
             local verified_obj = jwt:verify_jwt_obj("lua-resty-jwt", jwt_obj)
             ngx.say(jwt_obj["verified"])
@@ -183,7 +183,7 @@ invalid jwt string
 GET /t
 --- response_body
 false
-signature mismatch: signature
+signature mismatch: c2lnbmF0dXJl
 --- no_error_log
 [error]
 
@@ -436,7 +436,7 @@ bar
 GET /t
 --- response_body
 false
-Wrongly encoded signature
+invalid jwt string: non-canonical base64url in signature
 --- no_error_log
 [error]
 
@@ -528,7 +528,7 @@ WQIDAQAB
 GET /t
 --- response_body
 false
-Wrongly encoded signature
+invalid jwt string: non-canonical base64url in signature
 --- no_error_log
 [error]
 
@@ -575,7 +575,7 @@ Wrongly encoded signature
 GET /t
 --- response_body
 false
-Verification failed
+invalid jwt string: non-canonical base64url in signature
 --- no_error_log
 [error]
 
@@ -820,7 +820,7 @@ test
             local jwt = require "resty.jwt"
             local jwt_str = "eyJ0eXAiOiJKV1QiLCJlbmMiOiJBMjU2R0NNIn0" ..
                 ".eyJmb28iOiJiYXIifQ" ..
-                ".signature"
+                ".c2lnbmF0dXJl"
 
             local jwt_obj = jwt:load_jwt(jwt_str)
             local verified_obj = jwt:verify_jwt_obj(
@@ -846,7 +846,7 @@ No algorithm supplied
             local jwt = require "resty.jwt"
             local jwt_str = "eyJ0eXAiOiJKV1QiLCJlbmMiOiJBMjU2R0NNIiwiYWxnIjoiSFMyNTYifQ" ..
                 ".eyJmb28iOiJiYXIifQ" ..
-                ".signature"
+                ".c2lnbmF0dXJl"
 
             local jwt_obj = jwt:load_jwt(jwt_str)
             local verified_obj = jwt:verify_jwt_obj(
@@ -860,6 +860,6 @@ No algorithm supplied
 GET /t
 --- response_body
 false
-signature mismatch: signature
+signature mismatch: c2lnbmF0dXJl
 --- no_error_log
 [error]

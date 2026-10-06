@@ -127,7 +127,7 @@ HS512 true bar
             local malleated = sig:sub(1, -2) .. alt
             ngx.say(jwt:jwt_decode(malleated) == raw)
             local obj = jwt:verify("secret", hp .. "." .. malleated)
-            ngx.say(obj.verified, " ", obj.reason == "signature mismatch: " .. malleated)
+            ngx.say(obj.verified, " ", obj.reason == "invalid jwt string: non-canonical base64url in signature")
         }
     }
 --- request
