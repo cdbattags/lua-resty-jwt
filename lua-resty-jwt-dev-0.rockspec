@@ -25,6 +25,7 @@ build = {
     ['resty.jwt'] = 'lib/resty/jwt.lua',
     ['resty.evp'] = 'lib/resty/evp.lua',
     ['resty.jwt-validators'] = 'lib/resty/jwt-validators.lua',
+    ['resty.jwt-zlib'] = 'lib/resty/jwt-zlib.lua',
     ['resty.utils'] = 'lib/resty/utils.lua',
     ['resty.hmac'] = 'third-party/lua-resty-hmac/lib/resty/hmac.lua'
   }
