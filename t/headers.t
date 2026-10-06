@@ -225,3 +225,194 @@ RS256: true everything is awesome~ :p
 ES256: true everything is awesome~ :p
 --- no_error_log
 [error]
+
+
+
+=== TEST 6: crit must be a non-empty array of distinct strings
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            jwt:set_crit_whitelist({ "ext" })
+            for _, crit in ipairs({ '"ext"', '[]', '{"ext":1}', '[1]', 'null', '["ext",2]',
+                                    '["ext","ext"]', 'true' }) do
+                local token = hs_token("secret", '{"alg":"HS256","ext":1,"crit":' .. crit .. '}')
+                local obj = jwt:verify("secret", token)
+                ngx.say(crit, ": ", obj.verified, " ", obj.reason)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+"ext": false invalid crit header: must be a non-empty array of strings
+[]: false invalid crit header: must be a non-empty array of strings
+{"ext":1}: false invalid crit header: must be a non-empty array of strings
+[1]: false invalid crit header: must be a non-empty array of strings
+null: false invalid crit header: must be a non-empty array of strings
+["ext",2]: false invalid crit header: must be a non-empty array of strings
+["ext","ext"]: false invalid crit header: duplicate name ext
+true: false invalid crit header: must be a non-empty array of strings
+--- no_error_log
+[error]
+
+
+
+=== TEST 7: crit must not list registered header parameters or absent ones
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local cases = {
+                '{"alg":"HS256","crit":["alg"]}',
+                '{"alg":"HS256","kid":"k","crit":["kid"]}',
+                '{"alg":"HS256","typ":"JWT","crit":["typ"]}',
+                '{"alg":"HS256","crit":["crit"]}',
+                '{"alg":"HS256","x5t#S256":"x","crit":["x5t#S256"]}',
+                '{"alg":"HS256","crit":["ext"]}',
+            }
+            jwt:set_crit_whitelist({ "ext" })
+            for _, header in ipairs(cases) do
+                local obj = jwt:verify("secret", hs_token("secret", header))
+                ngx.say(obj.verified, " ", obj.reason)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+false invalid crit header: lists registered header parameter alg
+false invalid crit header: lists registered header parameter kid
+false invalid crit header: lists registered header parameter typ
+false invalid crit header: lists registered header parameter crit
+false invalid crit header: lists registered header parameter x5t#S256
+false invalid crit header: lists absent header parameter ext
+--- no_error_log
+[error]
+
+
+
+=== TEST 8: JWS crit fails closed until the extension is declared understood
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local token = hs_token("secret", '{"alg":"HS256","ext":1,"crit":["ext"]}')
+
+            local obj = jwt:verify("secret", token)
+            ngx.say("default: ", obj.verified, " ", obj.reason)
+            obj = jwt:load_jwt(token)
+            ngx.say("load_jwt: ", obj.valid, " ", obj.reason)
+
+            local inst = jwt.new()
+            inst:set_crit_whitelist({ ext = true })
+            obj = inst:verify("secret", token)
+            ngx.say("instance: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify("secret", token)
+            ngx.say("module unaffected: ", obj.verified, " ", obj.reason)
+
+            -- an object loaded by an instance that understands "ext" is still
+            -- rejected when verified by one that doesn't
+            obj = inst:load_jwt(token)
+            obj = jwt:verify_jwt_obj("secret", obj)
+            ngx.say("verify_jwt_obj: ", obj.verified, " ", obj.reason)
+
+            -- every listed name must be understood
+            local token2 = hs_token("secret", '{"alg":"HS256","ext":1,"other":2,"crit":["ext","other"]}')
+            obj = inst:verify("secret", token2)
+            ngx.say("partly understood: ", obj.verified, " ", obj.reason)
+
+            inst:set_crit_whitelist(nil)
+            obj = inst:verify("secret", token)
+            ngx.say("reset: ", obj.verified, " ", obj.reason)
+
+            -- tokens without crit are unaffected
+            obj = jwt:verify("secret", hs_token("secret", '{"alg":"HS256","ext":1}'))
+            ngx.say("no crit: ", obj.verified)
+        }
+    }
+--- request
+GET /t
+--- response_body
+default: false unsupported critical header parameter: ext
+load_jwt: false unsupported critical header parameter: ext
+instance: true everything is awesome~ :p
+module unaffected: false unsupported critical header parameter: ext
+verify_jwt_obj: false unsupported critical header parameter: ext
+partly understood: false unsupported critical header parameter: other
+reset: false unsupported critical header parameter: ext
+no crit: true
+--- no_error_log
+[error]
+
+
+
+=== TEST 9: JWE crit fails closed and is checked before any decryption
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local token = dir_token({ ext = "v", crit = { "ext" } })
+
+            local obj = jwt:verify(DIR_KEY, token)
+            ngx.say("default: ", obj.verified, " ", obj.reason)
+            -- the wrong key would fail decryption: crit is rejected first
+            obj = jwt:verify(string.rep("x", 32), token)
+            ngx.say("wrong key: ", obj.verified, " ", obj.reason)
+
+            jwt:set_crit_whitelist({ "ext" })
+            obj = jwt:verify(DIR_KEY, token)
+            ngx.say("declared: ", obj.verified, " ", obj.reason, " ", obj.payload.foo)
+
+            obj = jwt:verify(DIR_KEY, dir_token({ crit = { "ext" } }))
+            ngx.say("absent: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify(DIR_KEY, dir_token({ crit = { "enc" } }))
+            ngx.say("registered: ", obj.verified, " ", obj.reason)
+            obj = jwt:verify(DIR_KEY, dir_token({ crit = "ext", ext = 1 }))
+            ngx.say("malformed: ", obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+default: false unsupported critical header parameter: ext
+wrong key: false unsupported critical header parameter: ext
+declared: true everything is awesome~ :p bar
+absent: false invalid crit header: lists absent header parameter ext
+registered: false invalid crit header: lists registered header parameter enc
+malformed: false invalid crit header: must be a non-empty array of strings
+--- no_error_log
+[error]
+
+
+
+=== TEST 10: set_crit_whitelist rejects registered names, b64 and non-strings
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            for _, bad in ipairs({ "ext", { "alg" }, { enc = true }, { "b64" }, { 1 }, { "" } }) do
+                local ok, err = pcall(jwt.set_crit_whitelist, jwt, bad)
+                ngx.say(ok and "accepted" or err)
+            end
+            local ok = pcall(jwt.set_crit_whitelist, jwt, { "ext", other = true, off = false })
+            ngx.say(ok and "accepted" or "rejected")
+        }
+    }
+--- request
+GET /t
+--- response_body
+'extensions' is expected to be a table of header parameter names, or nil
+'alg' can't be declared as an understood crit extension
+'enc' can't be declared as an understood crit extension
+'b64' can't be declared as an understood crit extension
+'extensions' is expected to be a table of header parameter names, or nil
+'extensions' is expected to be a table of header parameter names, or nil
+accepted
+--- no_error_log
+[error]

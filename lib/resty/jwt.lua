@@ -73,6 +73,7 @@ local str_const = {
   nbf = "nbf",
   iss = "iss",
   full_obj = "__jwt",
+  crit = "crit",
   x5c = "x5c",
   x5u = 'x5u',
   HS256 = "HS256",
@@ -681,6 +682,61 @@ local function get_payload_decoder(self)
     return self.payload_decoder or cjson_decode
 end
 
+-- Header Parameters registered by RFC 7515 (JWS), RFC 7516 (JWE) and RFC 7518
+-- (JWA). "crit" must never list them (RFC 7515 4.1.11, RFC 7516 4.1.13).
+local registered_header_params = {
+  alg = true, jku = true, jwk = true, kid = true, x5u = true, x5c = true,
+  x5t = true, ["x5t#S256"] = true, typ = true, cty = true, crit = true,
+  enc = true, zip = true, epk = true, apu = true, apv = true, iv = true,
+  tag = true, p2s = true, p2c = true,
+}
+
+local crit_malformed = "invalid crit header: must be a non-empty array of strings"
+
+--@function check the "crit" header parameter (RFC 7515 4.1.11). Fails closed:
+-- every listed name must be an extension declared via set_crit_whitelist.
+--@return nil if the header is acceptable, failure reason otherwise
+local function crit_error(self, header)
+  local crit = header[str_const.crit]
+  if crit == nil then
+    return nil
+  end
+  local n = type(crit) == str_const.table and #crit or 0
+  if n == 0 then
+    return crit_malformed
+  end
+  local count = 0
+  for _ in pairs(crit) do
+    count = count + 1
+  end
+  if count ~= n then
+    return crit_malformed
+  end
+
+  local understood = self and self.crit_whitelist
+  local seen = {}
+  for i = 1, n do
+    local name = crit[i]
+    if type(name) ~= str_const.string then
+      return crit_malformed
+    end
+    if seen[name] then
+      return "invalid crit header: duplicate name " .. name
+    end
+    seen[name] = true
+    if registered_header_params[name] then
+      return "invalid crit header: lists registered header parameter " .. name
+    end
+    if header[name] == nil then
+      return "invalid crit header: lists absent header parameter " .. name
+    end
+    if not (understood and understood[name]) then
+      return "unsupported critical header parameter: " .. name
+    end
+  end
+  return nil
+end
+
 --@function parse_jwe
 --@param pre-shared key
 --@encoded-header
@@ -690,6 +746,10 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   local header = _M:jwt_decode(encoded_header, true)
   if type(header) ~= str_const.table then
     error({reason="invalid header: " .. encoded_header})
+  end
+  local crit_err = crit_error(self, header)
+  if crit_err then
+    error({reason=crit_err})
   end
 
   local alg = header.alg
@@ -881,6 +941,10 @@ local function parse_jwt(self, encoded_header, encoded_payload, signature)
   if type(header) ~= str_const.table then
     error({reason="invalid header: " .. encoded_header})
   end
+  local crit_err = crit_error(self, header)
+  if crit_err then
+    error({reason=crit_err})
+  end
 
   -- Try JSON decoding first; fall back to raw string for non-JSON payloads (RFC 7515)
   local payload = _M:jwt_decode(encoded_payload, true, true)
@@ -1058,6 +1122,48 @@ end
 
 -- nil means DEFAULT_TYP_WHITELIST, false means typ validation is disabled
 _M.typ_whitelist = nil
+
+local crit_whitelist_error = "'extensions' is expected to be a table of header parameter names, or nil"
+
+--- Declare the extension Header Parameters this application understands, so
+-- tokens listing them in "crit" are accepted (RFC 7515 4.1.11). A token whose
+-- "crit" lists anything else is rejected. The library does not interpret the
+-- extensions itself: enforce their semantics with "__header" claim spec
+-- validators, which run after the signature has been verified.
+-- E.g., jwt:set_crit_whitelist({"exp-ext"}) or {["exp-ext"]=true}
+--
+-- @param extensions - A table with keys (or list entries) naming the
+--                     extensions. Registered header names (alg, enc, kid...)
+--                     can't be listed, nor "b64" (RFC 7797 is unsupported).
+--                     Pass nil to understand none (the default).
+function _M.set_crit_whitelist(self, extensions)
+  local whitelist = {}
+  if extensions ~= nil then
+    if type(extensions) ~= str_const.table then
+      error(crit_whitelist_error, 0)
+    end
+    for k, v in pairs(extensions) do
+      local name
+      if type(k) == str_const.number then
+        name = v
+      elseif v then
+        name = k
+      end
+      if name ~= nil then
+        if type(name) ~= str_const.string or name == str_const.empty then
+          error(crit_whitelist_error, 0)
+        end
+        if registered_header_params[name] or name == "b64" then
+          error("'" .. name .. "' can't be declared as an understood crit extension", 0)
+        end
+        whitelist[name] = true
+      end
+    end
+  end
+  self.crit_whitelist = whitelist
+end
+
+_M.crit_whitelist = nil
 
 
 --- Returns the list of default validations that will be
@@ -1852,6 +1958,13 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
   -- never trust a verdict left on the object by an earlier verification
   jwt_obj[str_const.verified] = false
   jwt_obj[str_const.reason] = nil
+
+  -- load_jwt already checked "crit", but jwt_obj may not come from load_jwt
+  local crit_err = crit_error(self, jwt_obj[str_const.header])
+  if crit_err then
+    jwt_obj[str_const.reason] = crit_err
+    return jwt_obj
+  end
 
   -- authenticate first: a signature failure takes precedence over claims
   if jwt_obj.typ == str_const.JWE or (jwt_obj.typ == nil and jwt_obj.internal ~= nil and jwt_obj[str_const.header][str_const.enc]) then
