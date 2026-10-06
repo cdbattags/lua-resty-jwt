@@ -31,6 +31,11 @@ local math_floor = math.floor
 local table_concat = table.concat
 local ngx_encode_base64 = ngx.encode_base64
 local ngx_decode_base64 = ngx.decode_base64
+-- lua-resty-core's ngx.base64 encodes/decodes base64url directly; without it
+-- (e.g. outside OpenResty) jwt_encode/jwt_decode translate standard base64
+local has_ngx_base64, ngx_base64 = pcall(require, "ngx.base64")
+local encode_base64url = has_ngx_base64 and ngx_base64.encode_base64url or nil
+local decode_base64url = has_ngx_base64 and ngx_base64.decode_base64url or nil
 local ngx_log = ngx.log
 local ngx_DEBUG = ngx.DEBUG
 local cjson_encode = cjson.encode
@@ -1306,6 +1311,9 @@ function _M.jwt_encode(self, ori, is_payload)
   if type(ori) == str_const.table then
     ori = is_payload and get_payload_encoder(self)(ori) or cjson_encode(ori)
   end
+  if encode_base64url and type(ori) == str_const.string then
+    return (encode_base64url(ori))
+  end
   local res = ngx_encode_base64(ori):gsub(str_const.plus, str_const.dash):gsub(str_const.slash, str_const.underscore):gsub(str_const.equal, str_const.empty)
   return res
 end
@@ -1314,15 +1322,20 @@ end
 
 --@function jwt decode : decode bas64 encoded string
 function _M.jwt_decode(self, b64_str, json_decode, is_payload)
-  b64_str = b64_str:gsub(str_const.dash, str_const.plus):gsub(str_const.underscore, str_const.slash)
-
-  local reminder = #b64_str % 4
-  if reminder > 0 then
-    b64_str = b64_str .. string_rep(str_const.equal, 4 - reminder)
-  end
-  local data = ngx_decode_base64(b64_str)
+  -- canonical base64url (no padding, URL-safe alphabet) takes the fast path
+  local data = decode_base64url and type(b64_str) == str_const.string and decode_base64url(b64_str)
   if not data then
-    return nil
+    -- jwt_decode has always also accepted padding and the standard alphabet
+    b64_str = b64_str:gsub(str_const.dash, str_const.plus):gsub(str_const.underscore, str_const.slash)
+
+    local reminder = #b64_str % 4
+    if reminder > 0 then
+      b64_str = b64_str .. string_rep(str_const.equal, 4 - reminder)
+    end
+    data = ngx_decode_base64(b64_str)
+    if not data then
+      return nil
+    end
   end
   if json_decode then
     data = is_payload and get_payload_decoder(self)(data) or cjson_decode(data)
