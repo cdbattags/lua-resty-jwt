@@ -112,6 +112,7 @@ int EC_GROUP_get_order(const EC_GROUP *group, BIGNUM *order, void *ctx);
 // PUBKEY
 EVP_PKEY *PEM_read_bio_PUBKEY(BIO *bp, EVP_PKEY **x,
                               pem_password_cb *cb, void *u);
+EVP_PKEY *d2i_PUBKEY_bio(BIO *bp, EVP_PKEY **a);
 
 // X509
 typedef struct x509_st X509;
