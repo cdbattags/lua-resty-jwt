@@ -936,7 +936,7 @@ GET /t
 [error]
 
 
-=== TEST 25: Default typ whitelist accepts at+jwt (RFC 9068)
+=== TEST 27: Default typ whitelist accepts at+jwt (RFC 9068)
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -963,7 +963,7 @@ at+jwt
 [error]
 
 
-=== TEST 26: Default typ whitelist accepts dpop+jwt (RFC 9449)
+=== TEST 28: Default typ whitelist accepts dpop+jwt (RFC 9449)
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -991,7 +991,7 @@ dpop+jwt
 
 
 
-=== TEST 27: Default typ whitelist rejects unknown typ
+=== TEST 29: Default typ whitelist rejects unknown typ
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -1016,7 +1016,7 @@ invalid typ: custom
 
 
 
-=== TEST 28: set_typ_whitelist replaces defaults
+=== TEST 30: set_typ_whitelist replaces defaults
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -1048,7 +1048,7 @@ true
 
 
 
-=== TEST 29: set_typ_whitelist(nil) disables typ validation
+=== TEST 31: set_typ_whitelist(nil) disables typ validation
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
@@ -1075,7 +1075,7 @@ anything-goes
 
 
 
-=== TEST 30: set_typ_whitelist({}) rejects every typ value
+=== TEST 32: set_typ_whitelist({}) rejects every typ value
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
