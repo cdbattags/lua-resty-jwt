@@ -2,14 +2,59 @@ local digest = require "resty.openssl.digest"
 
 local _M = {}
 
+local type = type
 local string_byte = string.byte
 local string_char = string.char
+local string_rep = string.rep
 local string_sub = string.sub
 local table_concat = table.concat
 local table_insert = table.insert
 local math_floor = math.floor
 local math_ceil = math.ceil
 local unpack = unpack
+local ngx_encode_base64 = ngx.encode_base64
+local ngx_decode_base64 = ngx.decode_base64
+-- lua-resty-core's ngx.base64 encodes/decodes base64url directly; without it
+-- (e.g. outside OpenResty) standard base64 is translated
+local has_ngx_base64, ngx_base64 = pcall(require, "ngx.base64")
+local encode_base64url = has_ngx_base64 and ngx_base64.encode_base64url or nil
+local decode_base64url = has_ngx_base64 and ngx_base64.decode_base64url or nil
+
+--- base64url encode without padding (RFC 7515 Section 2)
+---@param s string
+---@return string
+function _M.base64url_encode(s)
+    if encode_base64url then
+        return (encode_base64url(s))
+    end
+    return (ngx_encode_base64(s):gsub("%+", "-"):gsub("/", "_"):gsub("=", ""))
+end
+
+--- Strict base64url decode (RFC 7515 Section 2): URL-safe alphabet only, no
+-- padding, and the canonical encoding only (no non-zero trailing bits), so
+-- every value has exactly one accepted spelling.
+---@param s string
+---@return string|nil decoded bytes, or nil if `s` isn't canonical base64url
+function _M.base64url_decode_strict(s)
+    if type(s) ~= "string" or s:find("[^A-Za-z0-9_%-]") or #s % 4 == 1 then
+        return nil
+    end
+    local data
+    if decode_base64url then
+        data = decode_base64url(s)
+    else
+        local b64 = s:gsub("%-", "+"):gsub("_", "/")
+        local rem = #b64 % 4
+        if rem > 0 then
+            b64 = b64 .. string_rep("=", 4 - rem)
+        end
+        data = ngx_decode_base64(b64)
+    end
+    if not data or _M.base64url_encode(data) ~= s then
+        return nil
+    end
+    return data
+end
 
 function _M.append_array(dest, src)
     dest = dest or {}

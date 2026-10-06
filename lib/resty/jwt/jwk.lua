@@ -10,6 +10,7 @@ local cjson = require "cjson.safe"
 local pkey = require "resty.openssl.pkey"
 local x509 = require "resty.openssl.x509"
 local digest = require "resty.openssl.digest"
+local utils = require "resty.utils"
 
 local _M = {}
 
@@ -19,10 +20,7 @@ local ipairs = ipairs
 local tostring = tostring
 local setmetatable = setmetatable
 local getmetatable = getmetatable
-local string_rep = string.rep
 local table_concat = table.concat
-local ngx_decode_base64 = ngx.decode_base64
-local ngx_encode_base64 = ngx.encode_base64
 local ngx_log = ngx.log
 local ngx_DEBUG = ngx.DEBUG
 local ngx_WARN = ngx.WARN
@@ -34,26 +32,10 @@ local KEYSET_MT = {
   __tostring = function() return "resty.jwt.jwk key set" end,
 }
 
---@function strict base64url decoding (RFC 7515 2: no padding, URL alphabet)
---@return decoded string or nil
-local function b64url_decode(s)
-  if type(s) ~= "string" or s:find("[^%w_%-]") then
-    return nil
-  end
-  local rem = #s % 4
-  if rem == 1 then
-    return nil
-  end
-  s = s:gsub("%-", "+"):gsub("_", "/")
-  if rem > 0 then
-    s = s .. string_rep("=", 4 - rem)
-  end
-  return ngx_decode_base64(s)
-end
-
-local function b64url_encode(s)
-  return (ngx_encode_base64(s):gsub("%+", "-"):gsub("/", "_"):gsub("=", ""))
-end
+-- strict, canonical base64url (RFC 7515 2: no padding, URL alphabet, no
+-- non-zero trailing bits), shared with resty.jwt's token parsing
+local b64url_decode = utils.base64url_decode_strict
+local b64url_encode = utils.base64url_encode
 
 local ec_curves = { ["P-256"] = true, ["P-384"] = true, ["P-521"] = true }
 local okp_curves = { Ed25519 = true, Ed448 = true, X25519 = true, X448 = true }

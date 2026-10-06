@@ -1336,11 +1336,7 @@ local jwe_part_may_be_empty = { [2] = true, [4] = true }
 -- section 2). Without this, one token has many accepted spellings, which
 -- defeats denylists and replay caches keyed on the token string.
 local function is_canonical_b64url(s)
-  if s:find("[^A-Za-z0-9_%-]") or #s % 4 == 1 then
-    return false
-  end
-  local decoded = _M:jwt_decode(s)
-  return decoded ~= nil and _M:jwt_encode(decoded) == s
+  return utils.base64url_decode_strict(s) ~= nil
 end
 
 local function parse(self, secret, token_str)
