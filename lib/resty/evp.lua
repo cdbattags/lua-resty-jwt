@@ -483,6 +483,20 @@ local function _create_digest_ctx(self, init_fn, md)
     return md_ctx
 end
 
+-- Constructors are called as Class:new(...) and used to store their state on
+-- (and return) the shared class table, so a second new() replaced the key of
+-- every object made before. Each call now returns a fresh instance.
+local instance_mts = setmetatable({}, { __mode = "k" })
+
+local function _new_instance(class)
+    local mt = instance_mts[class]
+    if not mt then
+        mt = { __index = class }
+        instance_mts[class] = mt
+    end
+    return setmetatable({}, mt)
+end
+
 local RSASigner = {algo="RSA"}
 _M.RSASigner = RSASigner
 
@@ -492,6 +506,7 @@ _M.RSASigner = RSASigner
 -- @param padding optional RSA padding mode (e.g., RSA_PKCS1_PSS_PADDING)
 -- @returns RSASigner, err_string
 function RSASigner.new(self, pem_private_key, password, padding)
+    self = _new_instance(self)
     self.padding = padding
     return _new_key (
         self,
@@ -613,6 +628,7 @@ _M.RSAVerifier = RSAVerifier
 -- @param padding optional RSA padding mode (e.g., RSA_PKCS1_PSS_PADDING)
 -- @returns RSAVerifier, error_string
 function RSAVerifier.new(self, key_source, padding)
+    self = _new_instance(self)
     if type(key_source) ~= "table" or key_source.public_key == nil then
         return nil, "You must pass in an key_source for a public key"
     end
@@ -754,6 +770,7 @@ _M.Cert = Cert
 -- @param payload A PEM or DER format X509 certificate
 -- @returns Cert, error_string
 function Cert.new(self, payload)
+    self = _new_instance(self)
     if type(payload) ~= "string" then
         return nil, "Must pass a PEM or binary DER cert"
     end
@@ -915,6 +932,7 @@ _M.PublicKey = PublicKey
 -- @param payload A PEM or DER format public key file
 -- @return PublicKey, error_string
 function PublicKey.new(self, payload)
+    self = _new_instance(self)
     if type(payload) ~= "string" then
         return nil, "Must pass a PEM or binary DER public key"
     end
@@ -946,6 +964,7 @@ _M.RSAEncryptor = RSAEncryptor
 -- @param digest_alg digest algorithm to use
 -- @returns RSAEncryptor, err_string
 function RSAEncryptor.new(self, key_source, padding, digest_alg)
+    self = _new_instance(self)
     if type(key_source) ~= "table" or key_source.public_key == nil then
         return nil, "You must pass in an key_source for a public key"
     end
@@ -996,6 +1015,7 @@ _M.RSADecryptor = RSADecryptor
 -- @param digest_alg digest algorithm to use
 -- @returns RSADecryptor, error_string
 function RSADecryptor.new(self, pem_private_key, password, padding, digest_alg)
+    self = _new_instance(self)
     self.padding = padding or CONST.RSA_PKCS1_OAEP_PADDING
     self.digest_alg = digest_alg or CONST.SHA256_DIGEST
     return _new_key (

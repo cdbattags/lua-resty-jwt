@@ -841,3 +841,60 @@ false
 loads: 5
 --- no_error_log
 [error]
+
+
+=== TEST 15: evp constructors return distinct instances (no shared class state)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local evp = require "resty.evp"
+            local function v(...) return tostring((...)) end
+            local msg = "hello"
+
+            local a = assert(evp.PublicKey:new(read_file("cert-pubkey.pem")))
+            local b = assert(evp.PublicKey:new(read_file("ec_cert_pubkey.pem")))
+            ngx.say("distinct: ", a ~= b, " ", a.public_key ~= b.public_key, " ", rawget(evp.PublicKey, "public_key") == nil)
+
+            -- objects made earlier keep their own key after later new() calls
+            local rs = assert(evp.RSASigner:new(read_file("cert-key.pem")))
+            local es = assert(evp.ECSigner:new(read_file("ec_cert-key.pem")))
+            local rs2 = assert(evp.RSASigner:new(read_file("privatekey.pem")))
+            local rv = assert(evp.RSAVerifier:new(a))
+            local ev = assert(evp.ECVerifier:new(b))
+            local c = assert(evp.Cert:new(read_file("cert.pem")))
+            local ec_cert = assert(evp.Cert:new(read_file("ec_cert.pem")))
+            local cv = assert(evp.RSAVerifier:new(c))
+            local pv = assert(evp.RSAVerifier:new(a, evp.CONST.RSA_PKCS1_PSS_PADDING))
+
+            local rsig = assert(rs:sign(msg, "SHA256"))
+            local esig = assert(es:get_raw_sig(assert(es:sign(msg, "SHA256"))))
+            ngx.say("rsa: ", v(rv:verify(msg, rsig, "SHA256")))
+            ngx.say("ec: ", v(ev:verify(msg, esig, "SHA256")))
+            ngx.say("cert: ", v(cv:verify(msg, rsig, "SHA256")))
+            ngx.say("other rsa key: ", v(rv:verify(msg, assert(rs2:sign(msg, "SHA256")), "SHA256")))
+            ngx.say("pss verifier is separate: ", v(pv:verify(msg, rsig, "SHA256")), " ", v(rv:verify(msg, rsig, "SHA256")))
+            ngx.say("certs: ", c:get_fingerprint("SHA256") ~= ec_cert:get_fingerprint("SHA256"))
+            ngx.say("classes: ", getmetatable(ev).__index == evp.ECVerifier, " ", getmetatable(es).__index == evp.ECSigner,
+                " ", getmetatable(rs).__index == evp.RSASigner)
+
+            local enc = assert(evp.RSAEncryptor:new(a))
+            local dec1 = assert(evp.RSADecryptor:new(read_file("cert-key.pem")))
+            local dec2 = assert(evp.RSADecryptor:new(read_file("privatekey.pem")))
+            ngx.say("decrypt: ", v(dec1:decrypt(assert(enc:encrypt("cek")))), " ", dec2:decrypt(assert(enc:encrypt("cek"))) == nil)
+        }
+    }
+--- request
+GET /t
+--- response_body
+distinct: true true true
+rsa: true
+ec: true
+cert: true
+other rsa key: false
+pss verifier is separate: false true
+certs: true
+classes: true true true
+decrypt: cek true
+--- no_error_log
+[error]
