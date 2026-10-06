@@ -1670,14 +1670,14 @@ _M.x5u_content_retriever = nil
 --@param  jwe payload
 --@return jwe token
 local function sign_jwe(self, secret_key, jwt_obj)
-  local header = jwt_obj.header
+  -- work on a copy: epk, iv, tag, p2s and p2c are added below, and the
+  -- caller's table must not change. "typ" is kept (RFC 7516 4.1.11).
+  local header = {}
+  for k, v in pairs(jwt_obj.header) do
+    header[k] = v
+  end
   local enc = header.enc
   local alg = header.alg
-
-  -- remove type
-  if header.typ then
-    header.typ = nil
-  end
 
   -- TODO: implement logic for creating enc key and mac key and then encrypt key
   local key, encrypted_key, mac_key, enc_key, _

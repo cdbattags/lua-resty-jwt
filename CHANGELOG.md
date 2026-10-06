@@ -92,6 +92,10 @@ Token output:
 - `sign` serializes the header with a stable parameter order (`typ`, `alg`, `enc`, `zip`,
   `kid`, then the rest sorted by name), so the same input always gives the same token. The
   token bytes can differ from what 0.3.x produced for the same input; both verify.
+- A JWE keeps its `typ` header (RFC 7516 4.1.11); 0.3.x silently dropped it. A JWE signed
+  with `typ` now carries it in the protected header, so `verify_with`'s `typ` option and
+  `validators.typ_is` can check it. `sign` no longer adds `epk`, `iv`, `tag`, `p2s` or `p2c`
+  to the caller's header table, nor removes `typ` from it.
 
 Validators:
 - Validators receive the verified payload as a 4th argument (`chain` forwards it).

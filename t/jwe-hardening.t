@@ -708,3 +708,47 @@ instance nil whitelist: whitelist unsupported alg: PBES2-HS256+A128KW
 instance nil trusted certs: /lua-resty-jwt/testcerts/root.pem
 --- no_error_log
 [error]
+
+
+
+=== TEST 14: sign keeps a JWE's typ and leaves the caller's header table unchanged
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local cjson = require "cjson"
+            local jwt = require "resty.jwt"
+            local function read(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local c = f:read("*a"); f:close(); return c
+            end
+            local function keys_of(t)
+                local names = {}
+                for k in pairs(t) do names[#names + 1] = k end
+                table.sort(names)
+                return table.concat(names, ",")
+            end
+            for _, c in ipairs({
+                { alg = "dir", enc = "A128CBC-HS256", key = string.rep("k", 32) },
+                { alg = "A128GCMKW", enc = "A128GCM", key = string.rep("k", 16) },
+                { alg = "PBES2-HS256+A128KW", enc = "A128GCM", key = "password" },
+                { alg = "ECDH-ES", enc = "A128GCM", key = read("ec_cert_pubkey.pem"), dkey = read("ec_cert-key.pem") },
+            }) do
+                local header = { typ = "at+jwt", alg = c.alg, enc = c.enc }
+                local token = jwt:sign(c.key, { header = header, payload = { foo = "bar" } })
+                local protected = cjson.decode(jwt:jwt_decode(token:match("^[^.]+")))
+                local obj = jwt:verify_with(c.dkey or c.key, token, { algorithms = { c.alg, c.enc }, typ = "at+jwt" })
+                ngx.say(c.alg, ": typ=", protected.typ, " verify_with typ: ", tostring(obj.verified),
+                        " caller header: ", keys_of(header))
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+dir: typ=at+jwt verify_with typ: true caller header: alg,enc,typ
+A128GCMKW: typ=at+jwt verify_with typ: true caller header: alg,enc,typ
+PBES2-HS256+A128KW: typ=at+jwt verify_with typ: true caller header: alg,enc,typ
+ECDH-ES: typ=at+jwt verify_with typ: true caller header: alg,enc,typ
+--- no_error_log
+[error]
