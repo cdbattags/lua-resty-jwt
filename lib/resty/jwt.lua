@@ -2418,17 +2418,107 @@ local function get_allowed_algorithms(algorithms)
   return allowed
 end
 
+-- checks that a verify_with option is a string or a non-empty list of strings
+local function check_string_list_option(options, name)
+  local value = options[name]
+  if type(value) == str_const.string then
+    return
+  end
+  local msg = "verify_with: options." .. name .. " must be a string or a non-empty list of strings"
+  if type(value) ~= str_const.table or value[1] == nil then
+    error(msg, 0)
+  end
+  for _, v in ipairs(value) do
+    if type(v) ~= str_const.string then
+      error(msg, 0)
+    end
+  end
+end
+
+-- builds the claim specs for the verify_with claim options. Returns the specs
+-- to run before the caller's claim specs and the one to run after them
+local function get_option_claim_specs(options)
+  local before = {}
+  local spec = {}
+
+  local required = options.required_claims
+  if required ~= nil then
+    if type(required) ~= str_const.table or required[1] == nil then
+      error("verify_with: options.required_claims must be a non-empty list of claim names", 0)
+    end
+    local required_spec = {}
+    for _, name in ipairs(required) do
+      if type(name) ~= str_const.string then
+        error("verify_with: options.required_claims must be a non-empty list of claim names", 0)
+      end
+      required_spec[name] = jwt_validators.required()
+    end
+    before[#before + 1] = required_spec
+  end
+
+  if options.issuer ~= nil then
+    check_string_list_option(options, "issuer")
+    local issuers = options.issuer
+    spec[str_const.iss] = jwt_validators.equals_any_of(
+      type(issuers) == str_const.string and { issuers } or issuers)
+  end
+
+  if options.audience ~= nil then
+    check_string_list_option(options, "audience")
+    spec.aud = jwt_validators.audience(options.audience)
+  end
+
+  if options.max_age ~= nil then
+    local max_age = options.max_age
+    if type(max_age) ~= str_const.number or max_age < 0 then
+      error("verify_with: options.max_age must be a non-negative number of seconds", 0)
+    end
+    spec.iat = jwt_validators.issued_at({ max_age = max_age })
+  end
+
+  if options.typ ~= nil then
+    check_string_list_option(options, str_const.typ)
+    spec[str_const.header_specs] = { typ = jwt_validators.typ_is(options.typ) }
+  end
+
+  if next(spec) ~= nil then
+    before[#before + 1] = spec
+  end
+
+  -- the jti hook runs last, so it only records tokens that passed every
+  -- other check
+  local after
+  if options.jti ~= nil then
+    if type(options.jti) ~= str_const.funct then
+      error("verify_with: options.jti must be a function", 0)
+    end
+    after = { jti = jwt_validators.jti_hook(options.jti) }
+  end
+
+  return before, after
+end
+
 --- Verify a JWS/JWE string, pinning the accepted algorithms for this call.
 --
 -- jwt:verify_with(secret, jwt_str, {
 --   algorithms = { "RS256", "ES256" },   -- required: allowed "alg" header values
 --   claim_specs = { spec1, spec2 },      -- optional: same as verify()'s varargs
+--   issuer = "https://issuer.example",   -- optional: required "iss", or a list
+--   audience = "api",                    -- optional: required "aud", or a list
+--   max_age = 3600,                      -- optional: required "iat", max age
+--   required_claims = { "sub" },         -- optional: claims that must exist
+--   typ = "at+jwt",                      -- optional: required "typ" header
+--   jti = function(jti, payload) end,    -- optional: required "jti" hook
 -- })
 --
 -- For a JWE both the key management "alg" and the content encryption "enc"
 -- must be listed. They are checked before the token is parsed, so a JWE using
 -- a disallowed algorithm is never decrypted. Applies in addition to
 -- set_alg_whitelist().
+--
+-- The claim options add to claim_specs (or, without claim_specs, to the
+-- default "exp"/"nbf" checks of verify()). The jti hook runs after every
+-- other claim check has passed.
 function _M.verify_with(self, secret, jwt_str, options)
   if type(options) ~= str_const.table then
     error("verify_with: options must be a table", 0)
@@ -2438,6 +2528,7 @@ function _M.verify_with(self, secret, jwt_str, options)
   if type(claim_specs) ~= str_const.table then
     error("verify_with: options.claim_specs must be a list of claim specs", 0)
   end
+  local before_specs, after_spec = get_option_claim_specs(options)
 
   if type(jwt_str) ~= str_const.string then
     return {verified=false, reason=str_const.invalid_jwt}
@@ -2460,7 +2551,25 @@ function _M.verify_with(self, secret, jwt_str, options)
   end
   -- otherwise load_jwt reports the malformed header
 
-  return _M.verify(self, secret, jwt_str, unpack(claim_specs))
+  if #before_specs == 0 and after_spec == nil then
+    return _M.verify(self, secret, jwt_str, unpack(claim_specs))
+  end
+
+  local jwt_obj = _M.load_jwt(self, jwt_str, secret)
+  if not jwt_obj.valid then
+    return {verified=false, reason=jwt_obj[str_const.reason]}
+  end
+  local specs = before_specs
+  if #claim_specs == 0 then
+    -- what verify() would apply without claim specs
+    specs[#specs + 1] = _M:get_default_validation_options(jwt_obj)
+  else
+    for _, claim_spec in ipairs(claim_specs) do
+      specs[#specs + 1] = claim_spec
+    end
+  end
+  specs[#specs + 1] = after_spec
+  return _M.verify_jwt_obj(self, secret, jwt_obj, unpack(specs))
 end
 
 function _M.set_payload_encoder(self, encoder)

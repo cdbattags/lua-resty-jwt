@@ -166,15 +166,32 @@ Like `verify`, but takes an options table that pins the algorithms accepted for 
 * `algorithms` (required): list of allowed `alg` header values, e.g. `{ "RS256", "ES256" }` (the `set_alg_whitelist` style `{ RS256 = 1 }` is accepted too). As with `set_alg_whitelist`, a JWE's `enc` must be listed as well, e.g. `{ "RSA-OAEP-256", "A256GCM" }`.
 * `claim_specs` (optional): list of `claim_spec` tables, the same as the trailing arguments of `verify`.
 
+These optional options are shortcuts for common [validators](#jwt-validators). Each one makes its claim (or header) required:
+
+* `issuer`: the `iss` claim must equal this string, or one of this list of strings (`validators.equals_any_of`).
+* `audience`: the `aud` claim (a string or an array of strings) must contain this audience, or one of this list (`validators.audience`).
+* `max_age`: the `iat` claim must not be in the future and must be at most `max_age` seconds old (`validators.issued_at`).
+* `required_claims`: list of claim names that must be present, e.g. `{ "sub", "iss" }`.
+* `typ`: the `typ` *header* must be this type, or one of this list, compared like [set_typ_whitelist](#set_typ_whitelist) (`validators.typ_is`).
+* `jti`: a function `hook(jti, payload)` called with the (string) `jti` claim, e.g. to detect replays; it must return `true` to accept the token (`validators.jti_hook`). It runs after every other check has passed, so a token that fails another check, or whose signature is invalid, is never recorded.
+
+They are checked in addition to `claim_specs` or, when no `claim_specs` are given, in addition to the default `exp`/`nbf` checks of `verify`. Date checks use the system leeway (see `validators.set_system_leeway`); for a per-call leeway, use the validators in `claim_specs`.
+
 The `alg` (and a JWE's `enc`) is checked before the token is parsed, so a JWE using a disallowed algorithm is never decrypted. A global [set_alg_whitelist](#set_alg_whitelist) still applies as well. Invalid options raise an error.
 
 ```lua
 local jwt_obj = jwt:verify_with(public_key, jwt_token, {
     algorithms = { "RS256" },
-    claim_specs = { { iss = validators.equals("https://issuer.example") } },
+    issuer = "https://issuer.example",
+    audience = "https://api.example",
+    max_age = 3600,
+    typ = "at+jwt",
+    required_claims = { "sub" },
 })
 -- an HS256 (or any non-RS256) token fails with "whitelist unsupported alg: HS256"
 ```
+
+Note that `verify_with` only checks `aud` when `audience` is given: RFC 7519 says a token whose `aud` doesn't name you must be rejected, so set `audience` whenever your tokens carry one.
 
 
 ## Keys: PEM, JWK, JWK Set and key objects

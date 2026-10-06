@@ -503,3 +503,237 @@ direct: true
 direct missing: false'sub' claim is required.
 --- no_error_log
 [error]
+
+
+=== TEST 15: verify_with issuer and audience options
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function vw(label, payload, opts)
+                opts.algorithms = {"HS256"}
+                local obj = jwt:verify_with("secret", hs_token(payload), opts)
+                ngx.say(label, ": ", obj.verified, " ", obj.reason)
+            end
+            vw("iss", {iss="a"}, {issuer="a"})
+            vw("iss list", {iss="b"}, {issuer={"a", "b"}})
+            vw("iss mismatch", {iss="evil"}, {issuer={"a", "b"}})
+            vw("iss missing", {sub="x"}, {issuer="a"})
+            vw("aud", {aud="api"}, {audience="api"})
+            vw("aud array", {aud={"x", "web"}}, {audience={"api", "web"}})
+            vw("aud mismatch", {aud={"x"}}, {audience="api"})
+            vw("aud malformed", {aud=7}, {audience="api"})
+            vw("aud missing", {sub="x"}, {audience="api"})
+            vw("both", {iss="a", aud="api"}, {issuer="a", audience="api"})
+        }
+    }
+--- request
+GET /t
+--- response_body
+iss: true everything is awesome~ :p
+iss list: true everything is awesome~ :p
+iss mismatch: false Claim 'iss' ('evil') returned failure
+iss missing: false 'iss' claim is required.
+aud: true everything is awesome~ :p
+aud array: true everything is awesome~ :p
+aud mismatch: false 'aud' claim does not contain an allowed audience.
+aud malformed: false 'aud' is malformed.  Expected to be a string or array of strings.
+aud missing: false 'aud' claim is required.
+both: true everything is awesome~ :p
+--- no_error_log
+[error]
+
+
+=== TEST 16: verify_with max_age, required_claims and typ options
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function vw(label, payload, opts, header)
+                opts.algorithms = {"HS256"}
+                local obj = jwt:verify_with("secret", hs_token(payload, header), opts)
+                ngx.say(label, ": ", obj.verified, " ", obj.reason)
+            end
+            vw("max_age", {iat=950}, {max_age=60})
+            vw("too old", {iat=900}, {max_age=60})
+            vw("future", {iat=1001}, {max_age=60})
+            vw("iat missing", {sub="x"}, {max_age=60})
+            vw("required", {sub="x", iss="y"}, {required_claims={"sub", "iss"}})
+            vw("required missing", {sub="x"}, {required_claims={"sub", "iss"}})
+            vw("typ", {sub="x"}, {typ="at+jwt"}, {typ="at+jwt", alg="HS256"})
+            vw("typ normalized", {sub="x"}, {typ="application/at+jwt"}, {typ="AT+JWT", alg="HS256"})
+            vw("typ list", {sub="x"}, {typ={"JWT", "at+jwt"}}, {typ="at+jwt", alg="HS256"})
+            vw("typ mismatch", {sub="x"}, {typ="at+jwt"}, {typ="JWT", alg="HS256"})
+            vw("typ missing", {sub="x"}, {typ="at+jwt"}, {alg="HS256"})
+        }
+    }
+--- request
+GET /t
+--- response_body
+max_age: true everything is awesome~ :p
+too old: false 'iat' claim is older than the maximum age: issued at Thu, 01 Jan 1970 00:15:00 GMT
+future: false 'iat' claim is in the future: issued at Thu, 01 Jan 1970 00:16:41 GMT
+iat missing: false 'iat' claim is required.
+required: true everything is awesome~ :p
+required missing: false 'iss' claim is required.
+typ: true everything is awesome~ :p
+typ normalized: true everything is awesome~ :p
+typ list: true everything is awesome~ :p
+typ mismatch: false Header 'typ' ('JWT') returned failure
+typ missing: false 'typ' header is required.
+--- no_error_log
+[error]
+
+
+=== TEST 17: verify_with jti option runs the hook last and only for verified tokens
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local seen = {}
+            local opts = {
+                algorithms = {"HS256"},
+                audience = "api",
+                claim_specs = {{exp = validators.is_not_expired()}},
+                jti = function(jti, payload)
+                    if seen[jti] then return nil, "replayed" end
+                    seen[jti] = payload.sub
+                    return true
+                end,
+            }
+            local function vw(label, token)
+                local obj = jwt:verify_with("secret", token, opts)
+                ngx.say(label, ": ", obj.verified, " ", (obj.reason:gsub("mismatch: .*", "mismatch")))
+            end
+            local good = hs_token({jti="a", sub="alice", aud="api", exp=2000})
+            vw("bad signature", tamper(good))
+            vw("expired", hs_token({jti="a", sub="alice", aud="api", exp=999}))
+            vw("wrong audience", hs_token({jti="a", sub="alice", aud="web", exp=2000}))
+            ngx.say("seen before: ", tostring(seen.a))
+            vw("first use", good)
+            vw("replay", good)
+            vw("no jti", hs_token({sub="alice", aud="api", exp=2000}))
+            ngx.say("seen after: ", tostring(seen.a))
+        }
+    }
+--- request
+GET /t
+--- response_body
+bad signature: false signature mismatch
+expired: false 'exp' claim expired at Thu, 01 Jan 1970 00:16:39 GMT
+wrong audience: false 'aud' claim does not contain an allowed audience.
+seen before: nil
+first use: true everything is awesome~ :p
+replay: false 'jti' claim was rejected: replayed
+no jti: false 'jti' claim is required.
+seen after: alice
+--- no_error_log
+[error]
+
+
+=== TEST 18: verify_with claim options keep the default exp/nbf checks
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local validators = require "resty.jwt-validators"
+            local function vw(label, payload, opts)
+                opts.algorithms = {"HS256"}
+                local obj = jwt:verify_with("secret", hs_token(payload), opts)
+                ngx.say(label, ": ", obj.verified, " ", obj.reason)
+            end
+            vw("expired", {aud="api", exp=999}, {audience="api"})
+            vw("not yet valid", {aud="api", nbf=1001}, {audience="api"})
+            vw("valid", {aud="api", exp=1001, nbf=1000}, {audience="api"})
+            -- like verify(), explicit claim specs replace the defaults
+            vw("specs replace defaults", {aud="api", exp=999},
+                {audience="api", claim_specs={{sub=validators.opt_equals("x")}}})
+            vw("specs and options", {aud="web", sub="y"},
+                {audience="api", claim_specs={{sub=validators.opt_equals("x")}}})
+            vw("legacy spec", {aud="api", exp=995},
+                {audience="api", claim_specs={{lifetime_grace_period=10}}})
+        }
+    }
+--- request
+GET /t
+--- response_body
+expired: false 'exp' claim expired at Thu, 01 Jan 1970 00:16:39 GMT
+not yet valid: false 'nbf' claim not valid until Thu, 01 Jan 1970 00:16:41 GMT
+valid: true everything is awesome~ :p
+specs replace defaults: true everything is awesome~ :p
+specs and options: false 'aud' claim does not contain an allowed audience.
+legacy spec: true everything is awesome~ :p
+--- no_error_log
+[error]
+
+
+=== TEST 19: verify_with rejects invalid claim options
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local token = hs_token({sub="x"})
+            local bad = {
+                {issuer=1}, {issuer={}}, {issuer={"a", 2}},
+                {audience=true}, {audience={}},
+                {max_age=-1}, {max_age="60"},
+                {required_claims="sub"}, {required_claims={}}, {required_claims={"sub", 1}},
+                {typ=5}, {jti="hook"},
+            }
+            for _, opts in ipairs(bad) do
+                opts.algorithms = {"HS256"}
+                local ok, err = pcall(jwt.verify_with, jwt, "secret", token, opts)
+                ngx.say(ok, " ", err)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+false verify_with: options.issuer must be a string or a non-empty list of strings
+false verify_with: options.issuer must be a string or a non-empty list of strings
+false verify_with: options.issuer must be a string or a non-empty list of strings
+false verify_with: options.audience must be a string or a non-empty list of strings
+false verify_with: options.audience must be a string or a non-empty list of strings
+false verify_with: options.max_age must be a non-negative number of seconds
+false verify_with: options.max_age must be a non-negative number of seconds
+false verify_with: options.required_claims must be a non-empty list of claim names
+false verify_with: options.required_claims must be a non-empty list of claim names
+false verify_with: options.required_claims must be a non-empty list of claim names
+false verify_with: options.typ must be a string or a non-empty list of strings
+false verify_with: options.jti must be a function
+--- no_error_log
+[error]
+
+
+=== TEST 20: verify_with checks algorithms before the claim options
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local calls = 0
+            local opts = {
+                algorithms = {"RS256"},
+                audience = "api",
+                jti = function() calls = calls + 1 return true end,
+            }
+            local obj = jwt:verify_with("secret", hs_token({aud="api", jti="a"}), opts)
+            ngx.say(obj.verified, " ", obj.reason, " calls=", calls)
+            obj = jwt:verify_with("secret", "not a token", opts)
+            ngx.say(obj.verified, " ", obj.reason, " calls=", calls)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false whitelist unsupported alg: HS256 calls=0
+false invalid jwt string calls=0
+--- no_error_log
+[error]
