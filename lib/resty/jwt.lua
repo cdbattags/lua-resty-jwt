@@ -25,6 +25,8 @@ local string_byte = string.byte
 local table_concat = table.concat
 local ngx_encode_base64 = ngx.encode_base64
 local ngx_decode_base64 = ngx.decode_base64
+local ngx_log = ngx.log
+local ngx_DEBUG = ngx.DEBUG
 local cjson_encode = cjson.encode
 local cjson_decode = cjson.decode
 local tostring = tostring
@@ -127,6 +129,7 @@ local str_const = {
   require_nbf_claim = "require_nbf_claim",
   require_exp_claim = "require_exp_claim",
   internal_error = "internal error",
+  jwe_decrypt_failed = "failed to decrypt JWE",
   everything_awesome = "everything is awesome~ :p"
 }
 
@@ -252,6 +255,24 @@ local function derive_shared_key(header, shared_secret_Z)
     return string_sub(full, 1, keydatalen / 8)
 end
 
+--@function raise the single, generic JWE decryption failure.
+-- Every authentication/decryption failure (bad tag or MAC, bad padding, key
+-- unwrap failure, wrong key) must look the same to the caller so the reason
+-- cannot be used as an oracle. Details go to the debug log only; never pass
+-- key material or plaintext in `detail`.
+local function jwe_decrypt_error(detail)
+  ngx_log(ngx_DEBUG, "JWE decryption failed: ", detail)
+  error({reason=str_const.jwe_decrypt_failed})
+end
+
+--@function check that an unwrapped/decrypted CEK has the size required by enc
+local function check_cek_len(enc, cek)
+  if #cek * 8 ~= keydatalen_map[enc] then
+    jwe_decrypt_error("unexpected CEK length for " .. enc)
+  end
+  return cek
+end
+
 -- AES Key Wrap (RFC 3394) default IV
 local AES_KW_DEFAULT_IV = string_char(0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6)
 
@@ -277,7 +298,7 @@ local function aes_key_unwrap(kek, wrapped_key)
     local c = assert(cipher.new(mode))
     local unwrapped, err = c:decrypt(kek, AES_KW_DEFAULT_IV, wrapped_key, false)
     if not unwrapped then
-        error({reason="AES key unwrap failed: " .. (err or "")})
+        jwe_decrypt_error("AES key unwrap failed: " .. (err or ""))
     end
     return unwrapped
 end
@@ -311,7 +332,7 @@ local function aes_gcm_key_unwrap(kek, wrapped_key, iv, tag)
     local c = assert(cipher.new(mode))
     local decrypted, err = c:decrypt(kek, iv, wrapped_key, false, nil, tag)
     if not decrypted then
-        error({reason="AES-GCM key unwrap failed: " .. (err or "")})
+        jwe_decrypt_error("AES-GCM key unwrap failed: " .. (err or ""))
     end
     return decrypted
 end
@@ -643,7 +664,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
         error({reason="AES key wrap key must not be null"})
     end
     local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
-    local secret_key = aes_key_unwrap(preshared_key, wrapped_key)
+    local secret_key = check_cek_len(enc, aes_key_unwrap(preshared_key, wrapped_key))
     key, _, enc_key = derive_keys(header.enc, secret_key)
   elseif alg == str_const.A128GCMKW or alg == str_const.A192GCMKW or alg == str_const.A256GCMKW then
     if not preshared_key then
@@ -655,7 +676,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
         error({reason="missing iv/tag in header for AES-GCM key wrap"})
     end
     local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
-    local secret_key = aes_gcm_key_unwrap(preshared_key, wrapped_key, kw_iv, kw_tag)
+    local secret_key = check_cek_len(enc, aes_gcm_key_unwrap(preshared_key, wrapped_key, kw_iv, kw_tag))
     key, _, enc_key = derive_keys(header.enc, secret_key)
   elseif alg == str_const.PBES2_HS256_A128KW or alg == str_const.PBES2_HS384_A192KW or alg == str_const.PBES2_HS512_A256KW then
     if not preshared_key then
@@ -668,7 +689,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     end
     local kek = pbes2_derive_kek(alg, preshared_key, p2s, p2c)
     local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
-    local secret_key = aes_key_unwrap(kek, wrapped_key)
+    local secret_key = check_cek_len(enc, aes_key_unwrap(kek, wrapped_key))
     key, _, enc_key = derive_keys(header.enc, secret_key)
   elseif alg == str_const.RSA_OAEP or alg == str_const.RSA_OAEP_256
       or alg == str_const.RSA_OAEP_384 or alg == str_const.RSA_OAEP_512 then
@@ -687,8 +708,12 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
         error({reason="failed to create rsa object: ".. err})
     end
     local secret_key, err = rsa_decryptor:decrypt(_M:jwt_decode(encoded_encrypted_key))
-    if err or not secret_key then
-       error({reason="failed to decrypt key: " .. err})
+    local cek_len = keydatalen_map[enc] / 8
+    if err or not secret_key or #secret_key ~= cek_len then
+      -- RFC 7516 11.5: on a CEK decryption error continue with a random CEK so
+      -- the failure is indistinguishable from a bad tag (reason and timing)
+      ngx_log(ngx_DEBUG, "JWE RSA-OAEP CEK decryption failed: ", err or "unexpected CEK length")
+      secret_key = resty_random.bytes(cek_len, true)
     end
     key, _, enc_key = derive_keys(header.enc, secret_key)
   end
@@ -716,13 +741,13 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
   if mac_key ~= str_const.empty then
     local expected_tag = cbc_hs_auth_tag(header.enc, mac_key, encoded_header, iv, cipher_text)
     if not constant_time_equals(expected_tag, signature_or_tag) then
-      error({reason="signature mismatch"})
+      jwe_decrypt_error("authentication tag mismatch")
     end
   end
 
   local payload, err = decrypt_payload(enc_key, cipher_text, header.enc, iv, encoded_header, signature_or_tag)
-  if err  then
-    error({reason="failed to decrypt payload: " .. err})
+  if err or not payload then
+    jwe_decrypt_error("content decryption failed: " .. (err or ""))
   end
 
   return {

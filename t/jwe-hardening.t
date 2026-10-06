@@ -243,13 +243,13 @@ A192GCMKW A192GCM: 16 16 true
 GET /t
 --- response_body
 A128CBC-HS256: true everything is awesome~ :p
-A128CBC-HS256 ct: false signature mismatch
+A128CBC-HS256 ct: false failed to decrypt JWE
 A128CBC-HS256 same reason: true
 A192CBC-HS384: true everything is awesome~ :p
-A192CBC-HS384 ct: false signature mismatch
+A192CBC-HS384 ct: false failed to decrypt JWE
 A192CBC-HS384 same reason: true
 A256CBC-HS512: true everything is awesome~ :p
-A256CBC-HS512 ct: false signature mismatch
+A256CBC-HS512 ct: false failed to decrypt JWE
 A256CBC-HS512 same reason: true
 --- no_error_log
 [error]
@@ -320,5 +320,76 @@ false unsupported enc: A256KW
 false missing or invalid alg in JWE header
 false missing or invalid alg in JWE header
 false invalid header: Imp1c3QgYSBzdHJpbmci
+--- no_error_log
+[error]
+
+
+
+=== TEST 8: every JWE authentication/decryption failure yields the same generic reason
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function read(name)
+                local f = assert(io.open("/lua-resty-jwt/testcerts/" .. name))
+                local c = f:read("*all")
+                f:close()
+                return c
+            end
+            local function tamper(token, idx)
+                local parts = {}
+                for p in (token .. "."):gmatch("([^.]*)%.") do
+                    parts[#parts + 1] = p
+                end
+                local raw = jwt:jwt_decode(parts[idx])
+                raw = raw:sub(1, -2) .. string.char(bit.bxor(raw:byte(-1), 1))
+                parts[idx] = jwt:jwt_encode(raw)
+                return table.concat(parts, ".")
+            end
+            local function sign(alg, enc, key)
+                return jwt:sign(key, { header = { alg = alg, enc = enc }, payload = { foo = "bar" } })
+            end
+            local k32, k32b = string.rep("k", 32), string.rep("w", 32)
+            local cases = {
+                { "dir GCM tampered tag", k32, tamper(sign("dir", "A256GCM", k32), 5) },
+                { "dir GCM tampered ct", k32, tamper(sign("dir", "A256GCM", k32), 4) },
+                { "dir GCM wrong key", k32b, sign("dir", "A256GCM", k32) },
+                { "dir CBC tampered tag", k32, tamper(sign("dir", "A128CBC-HS256", k32), 5) },
+                { "dir CBC tampered ct", k32, tamper(sign("dir", "A128CBC-HS256", k32), 4) },
+                { "dir CBC wrong key", k32b, sign("dir", "A128CBC-HS256", k32) },
+                { "A256KW wrong key", k32b, sign("A256KW", "A256GCM", k32) },
+                { "A256KW tampered key", k32, tamper(sign("A256KW", "A256GCM", k32), 2) },
+                { "A256GCMKW wrong key", k32b, sign("A256GCMKW", "A256GCM", k32) },
+                { "PBES2 wrong password", "wrong", sign("PBES2-HS256+A128KW", "A128GCM", "secret") },
+                { "RSA-OAEP wrong key", read("privatekey.pem"),
+                  sign("RSA-OAEP-256", "A256GCM", read("cert-pubkey.pem")) },
+                { "RSA-OAEP tampered key", read("cert-key.pem"),
+                  tamper(sign("RSA-OAEP", "A128CBC-HS256", read("cert-pubkey.pem")), 2) },
+                { "RSA-OAEP tampered tag", read("cert-key.pem"),
+                  tamper(sign("RSA-OAEP", "A128CBC-HS256", read("cert-pubkey.pem")), 5) },
+            }
+            for _, c in ipairs(cases) do
+                local obj = jwt:verify(c[2], c[3])
+                ngx.say(c[1], ": ", obj.verified, " ", obj.reason)
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+dir GCM tampered tag: false failed to decrypt JWE
+dir GCM tampered ct: false failed to decrypt JWE
+dir GCM wrong key: false failed to decrypt JWE
+dir CBC tampered tag: false failed to decrypt JWE
+dir CBC tampered ct: false failed to decrypt JWE
+dir CBC wrong key: false failed to decrypt JWE
+A256KW wrong key: false failed to decrypt JWE
+A256KW tampered key: false failed to decrypt JWE
+A256GCMKW wrong key: false failed to decrypt JWE
+PBES2 wrong password: false failed to decrypt JWE
+RSA-OAEP wrong key: false failed to decrypt JWE
+RSA-OAEP tampered key: false failed to decrypt JWE
+RSA-OAEP tampered tag: false failed to decrypt JWE
 --- no_error_log
 [error]

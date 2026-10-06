@@ -535,7 +535,7 @@ verified: true
             local jwt_obj = jwt:verify(get_testcert("cert-key.pem"), jwt_token)
             print(cjson.encode(jwt_obj))
             local err = "false"
-            if string.find(jwt_obj.reason, "failed to decrypt payload") then
+            if jwt_obj.reason == "failed to decrypt JWE" then
                 err = "true"
             end
             ngx.say(
