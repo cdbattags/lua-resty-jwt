@@ -130,6 +130,8 @@ sign a table_of_jwt to a jwt_token.
 
 The `alg` argument specifies which signing algorithm to use (`HS256`, `HS512`, `RS256`, `RS512`, `PS256`, `PS512`, `ES256`, `ES512`).
 
+The header is serialized with its parameters in a fixed order (`typ`, `alg`, `enc`, `zip`, `kid`, then the others sorted by name), so the same header always produces the same encoded header, whichever way the table was built. The payload is serialized by the payload encoder (cjson by default) in whatever order it produces.
+
 ### sample of table_of_jwt ###
 
 ```

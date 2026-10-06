@@ -29,6 +29,7 @@ local string_char = string.char
 local string_byte = string.byte
 local math_floor = math.floor
 local table_concat = table.concat
+local table_sort = table.sort
 local ngx_encode_base64 = ngx.encode_base64
 local ngx_decode_base64 = ngx.decode_base64
 -- lua-resty-core's ngx.base64 encodes/decodes base64url directly; without it
@@ -179,6 +180,55 @@ local function is_nil_or_boolean(arg_value)
     return true
 end
 
+-- header parameters emitted first, in this order; the rest follow sorted
+local header_param_rank = { typ = 1, alg = 2, enc = 3, zip = 4, kid = 5 }
+
+local function header_param_before(a, b)
+  local ra, rb = header_param_rank[a], header_param_rank[b]
+  if ra or rb then
+    return ra ~= nil and (rb == nil or ra < rb)
+  end
+  return a < b
+end
+
+--@function JSON encode a header with a stable parameter order (typ, alg,
+-- enc, zip, kid, then the others sorted by name), so that signing the same
+-- header always yields the same token. cjson follows the table's hash order,
+-- which depends on how the table was built. Nested values are encoded by
+-- cjson as they are.
+--@param header table
+--@return JSON string, or nil (like cjson) when it can't be encoded
+local function encode_header(header)
+  local names = {}
+  for k in pairs(header) do
+    if type(k) ~= str_const.string then
+      return cjson_encode(header)
+    end
+    names[#names + 1] = k
+  end
+  if #names == 0 then
+    return cjson_encode(header)
+  end
+  table_sort(names, header_param_before)
+  local members = {}
+  for i, name in ipairs(names) do
+    local value = cjson_encode(header[name])
+    if value == nil then
+      return cjson_encode(header)
+    end
+    members[i] = cjson_encode(name) .. ":" .. value
+  end
+  return "{" .. table_concat(members, ",") .. "}"
+end
+
+--@function base64url encode a header for signing
+local function encode_header_part(header)
+  if type(header) == str_const.table then
+    return _M:jwt_encode(encode_header(header))
+  end
+  return _M:jwt_encode(header)
+end
+
 --@function get the raw part
 --@param part_name
 --@param jwt_obj
@@ -189,7 +239,11 @@ local function get_raw_part(part_name, jwt_obj)
     if part == nil then
       error({reason="missing part " .. part_name})
     end
-    raw_part = _M:jwt_encode(part)
+    if part_name == str_const.header then
+      raw_part = encode_header_part(part)
+    else
+      raw_part = _M:jwt_encode(part)
+    end
   end
   return raw_part
 end
@@ -1545,7 +1599,7 @@ local function sign_jwe(self, secret_key, jwt_obj)
 
   -- TODO: implement logic for creating enc key and mac key and then encrypt key
   local key, encrypted_key, mac_key, enc_key, _
-  local encoded_header = _M:jwt_encode(header)
+  local encoded_header = encode_header_part(header)
   local payload_to_encrypt = get_payload_encoder(self)(jwt_obj.payload)
   -- RFC 7516 5.1 step 6: compress the plaintext before encrypting it
   if header.zip ~= nil then
@@ -1561,13 +1615,13 @@ local function sign_jwe(self, secret_key, jwt_obj)
     encrypted_key = ""
   elseif alg == str_const.ECDH_ES then
     local Z = ecdh_es_ephemeral_agreement(header, secret_key)
-    encoded_header = _M:jwt_encode(header)
+    encoded_header = encode_header_part(header)
     local derived_key = derive_shared_key(header, Z)
     _, mac_key, enc_key = derive_keys(enc, derived_key)
     encrypted_key = ""
   elseif alg == str_const.ECDH_ES_A128KW or alg == str_const.ECDH_ES_A192KW or alg == str_const.ECDH_ES_A256KW then
     local Z = ecdh_es_ephemeral_agreement(header, secret_key)
-    encoded_header = _M:jwt_encode(header)
+    encoded_header = encode_header_part(header)
     local kek = derive_shared_key(header, Z)
     key, mac_key, enc_key = derive_keys(enc)
     encrypted_key = aes_key_wrap(kek, key)
@@ -1582,13 +1636,13 @@ local function sign_jwe(self, secret_key, jwt_obj)
     encrypted_key = wrapped
     header.iv = _M:jwt_encode(kw_iv)
     header.tag = _M:jwt_encode(kw_tag)
-    encoded_header = _M:jwt_encode(header)
+    encoded_header = encode_header_part(header)
   elseif alg == str_const.PBES2_HS256_A128KW or alg == str_const.PBES2_HS384_A192KW or alg == str_const.PBES2_HS512_A256KW then
     local p2s = openssl_rand.bytes(16)
     local p2c = 4096
     header.p2s = _M:jwt_encode(p2s)
     header.p2c = p2c
-    encoded_header = _M:jwt_encode(header)
+    encoded_header = encode_header_part(header)
     local kek = pbes2_derive_kek(alg, secret_key, p2s, p2c)
     key, mac_key, enc_key = derive_keys(enc)
     encrypted_key = aes_key_wrap(kek, key)

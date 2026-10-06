@@ -435,3 +435,122 @@ C function: true
 copy: false false true true
 --- no_error_log
 [error]
+
+
+=== TEST 8: sign emits header parameters in a stable order
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function header_json(header)
+                local token = jwt:sign("secret", {header=header, payload={sub="alice"}})
+                return jwt:jwt_decode(token:match("^[^.]+"))
+            end
+            ngx.say(header_json({alg="HS256", typ="JWT"}))
+            ngx.say(header_json({x5u="https://example.com/k", b=1, kid="k1", a="z", alg="HS256", typ="JWT"}))
+            ngx.say(header_json({alg="HS256"}))
+            ngx.say(header_json({crit={"exp"}, exp=1, alg="HS256", typ="JWT", cty="JWT"}))
+
+            -- the same parameters added in different orders, or left over from
+            -- a larger table, give the same token
+            local names = {"typ", "alg", "kid", "cty", "x5t", "jku", "a", "b", "c", "d"}
+            local values = {typ="JWT", alg="HS256", kid="k", cty="x", x5t="t", jku="u", a=1, b=2, c=3, d=4}
+            local tokens = {}
+            for round = 1, 20 do
+                local header = {}
+                for i = 1, 40 do header["junk" .. i] = i end
+                local start = round % #names
+                for i = 0, #names - 1 do
+                    local name = names[(start + i) % #names + 1]
+                    header[name] = values[name]
+                end
+                for i = 1, 40 do header["junk" .. i] = nil end
+                tokens[jwt:sign("secret", {header=header, payload={sub="alice"}})] = true
+            end
+            local n = 0
+            for _ in pairs(tokens) do n = n + 1 end
+            ngx.say("distinct tokens: ", n)
+        }
+    }
+--- request
+GET /t
+--- response_body
+{"typ":"JWT","alg":"HS256"}
+{"typ":"JWT","alg":"HS256","kid":"k1","a":"z","b":1,"x5u":"https:\/\/example.com\/k"}
+{"alg":"HS256"}
+{"typ":"JWT","alg":"HS256","crit":["exp"],"cty":"JWT","exp":1}
+distinct tokens: 1
+--- no_error_log
+[error]
+
+
+=== TEST 9: the same header and payload sign to the same token in a fresh worker (1)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            ngx.say(jwt:sign("secret", {
+                header = {kid="key-1", typ="JWT", alg="HS256", x5u="https://example.com/key", jku="https://example.com/jwks"},
+                payload = {sub="alice"},
+            }))
+        }
+    }
+--- request
+GET /t
+--- response_body
+eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6ImtleS0xIiwiamt1IjoiaHR0cHM6XC9cL2V4YW1wbGUuY29tXC9qd2tzIiwieDV1IjoiaHR0cHM6XC9cL2V4YW1wbGUuY29tXC9rZXkifQ.eyJzdWIiOiJhbGljZSJ9.1ujCvs4UbhkfSgPStk04NGegh6bD-USlDZMWf5Auzkw
+--- no_error_log
+[error]
+
+
+=== TEST 10: the same header and payload sign to the same token in a fresh worker (2)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local header = {}
+            header.jku = "https://example.com/jwks"
+            header.x5u = "https://example.com/key"
+            header.alg = "HS256"
+            header.typ = "JWT"
+            header.kid = "key-1"
+            ngx.say(jwt:sign("secret", {header=header, payload={sub="alice"}}))
+        }
+    }
+--- request
+GET /t
+--- response_body
+eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6ImtleS0xIiwiamt1IjoiaHR0cHM6XC9cL2V4YW1wbGUuY29tXC9qd2tzIiwieDV1IjoiaHR0cHM6XC9cL2V4YW1wbGUuY29tXC9rZXkifQ.eyJzdWIiOiJhbGljZSJ9.1ujCvs4UbhkfSgPStk04NGegh6bD-USlDZMWf5Auzkw
+--- no_error_log
+[error]
+
+
+=== TEST 11: JWE protected headers are emitted in the stable order too
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function header_json(key, header)
+                local token = jwt:sign(key, {header=header, payload={sub="alice"}})
+                local obj = jwt:verify(key, token)
+                return (jwt:jwt_decode(token:match("^[^.]+"))), obj.verified
+            end
+            ngx.say(header_json(string.rep("k", 32), {kid="k1", enc="A256GCM", alg="dir"}))
+            local h = header_json(string.rep("k", 32), {enc="A128GCM", alg="A256GCMKW", kid="k2"})
+            ngx.say((h:gsub('"iv":"[^"]*"', '"iv":"…"'):gsub('"tag":"[^"]*"', '"tag":"…"')))
+            h = header_json("password", {enc="A128CBC-HS256", alg="PBES2-HS256+A128KW"})
+            ngx.say((h:gsub('"p2s":"[^"]*"', '"p2s":"…"')))
+        }
+    }
+--- request
+GET /t
+--- response_body
+{"alg":"dir","enc":"A256GCM","kid":"k1"}true
+{"alg":"A256GCMKW","enc":"A128GCM","kid":"k2","iv":"…","tag":"…"}
+{"alg":"PBES2-HS256+A128KW","enc":"A128CBC-HS256","p2c":4096,"p2s":"…"}
+--- no_error_log
+[error]
