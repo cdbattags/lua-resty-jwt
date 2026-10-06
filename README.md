@@ -204,7 +204,7 @@ Set a PEM file containing trusted CA certificates for `x5c`/`x5u` based verifica
 
 `syntax: jwt:set_pbes2_max_count(max_count)`
 
-Set the highest PBES2 iteration count (`p2c` header) accepted when decrypting `PBES2-HS*+A*KW` tokens. The count is chosen by whoever built the token and PBKDF2 runs inside the nginx worker, so tokens above the cap are rejected before any key derivation. Defaults to `310000`; counts below `1000` are always rejected, and `p2s` must decode to at least 8 octets. Pass `nil` to restore the default.
+Set the highest PBES2 iteration count (`p2c` header) accepted when decrypting `PBES2-HS*+A*KW` tokens. The count is chosen by whoever built the token and PBKDF2 runs inside the nginx worker, so tokens above the cap are rejected before any key derivation. Defaults to `10000` (the panva/jose default); raise it only if a token producer you trust uses a larger count; counts below `1000` are always rejected, and `p2s` must decode to at least 8 octets. Pass `nil` to restore the default.
 
 [Back to TOC](#table-of-contents)
 

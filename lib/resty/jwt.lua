@@ -349,10 +349,11 @@ local pbes2_config = {
 -- PBES2 "p2c" bounds. RFC 7518 4.8.1.2 recommends a minimum of 1000. The
 -- count is attacker controlled and PBKDF2 runs synchronously in the nginx
 -- worker, so the upper bound caps the CPU one token can burn; adjustable with
--- jwt:set_pbes2_max_count(). 310000 is the OWASP PBKDF2-HMAC-SHA256 figure;
--- for comparison panva/jose defaults to 10000 and go-jose hard-caps 1000000.
+-- jwt:set_pbes2_max_count(). The default matches panva/jose (10000) and is
+-- well above what this library signs with (4096); raise it only if you must
+-- accept tokens from producers using larger counts (go-jose hard-caps 1000000).
 local PBES2_MIN_COUNT = 1000
-local PBES2_DEFAULT_MAX_COUNT = 310000
+local PBES2_DEFAULT_MAX_COUNT = 10000
 -- RFC 7518 4.8.1.1: the salt input must be at least 8 octets
 local PBES2_MIN_SALT_LEN = 8
 
@@ -907,7 +908,7 @@ _M.alg_whitelist = nil
 -- header and every iteration costs worker CPU, so tokens above the cap are
 -- rejected before PBKDF2 runs. Counts below 1000 are always rejected.
 --
--- @param max_count - integer >= 1000, or nil to restore the default (310000)
+-- @param max_count - integer >= 1000, or nil to restore the default (10000)
 function _M.set_pbes2_max_count(self, max_count)
   if max_count ~= nil and (type(max_count) ~= str_const.number
       or max_count ~= math_floor(max_count) or max_count < PBES2_MIN_COUNT) then

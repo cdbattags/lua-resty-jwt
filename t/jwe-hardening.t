@@ -485,7 +485,7 @@ no whitelist: true
             end
             local cases = {
                 { "p2c=10^9", token("1000000000", salt16) },
-                { "p2c=310001", token("310001", salt16) },
+                { "p2c=10001", token("10001", salt16) },
                 { "p2c=999", token("999", salt16) },
                 { "p2c=0", token("0", salt16) },
                 { "p2c=-5000", token("-5000", salt16) },
@@ -499,7 +499,7 @@ no whitelist: true
                 { "p2s number", token("4096", "12345678") },
                 -- within bounds: reaches PBKDF2 and fails only at key unwrap
                 { "p2c=1000 p2s 8 bytes", token("1000", '"' .. jwt:jwt_encode("12345678") .. '"') },
-                { "p2c=310000", token("310000", salt16) },
+                { "p2c=10000", token("10000", salt16) },
             }
             for _, c in ipairs(cases) do
                 local obj = jwt:verify("password", c[2])
@@ -511,7 +511,7 @@ no whitelist: true
 GET /t
 --- response_body
 p2c=10^9: false p2c out of acceptable bounds in header for PBES2
-p2c=310001: false p2c out of acceptable bounds in header for PBES2
+p2c=10001: false p2c out of acceptable bounds in header for PBES2
 p2c=999: false p2c out of acceptable bounds in header for PBES2
 p2c=0: false p2c out of acceptable bounds in header for PBES2
 p2c=-5000: false p2c out of acceptable bounds in header for PBES2
@@ -524,7 +524,7 @@ p2s 7 bytes: false invalid p2s in header for PBES2
 p2s empty: false invalid p2s in header for PBES2
 p2s number: false invalid p2s in header for PBES2
 p2c=1000 p2s 8 bytes: false failed to decrypt JWE
-p2c=310000: false failed to decrypt JWE
+p2c=10000: false failed to decrypt JWE
 --- no_error_log
 [error]
 
