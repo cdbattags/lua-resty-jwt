@@ -386,7 +386,6 @@ local KTY_OCT = set("oct")
 local KTY_RSA = set("RSA")
 local KTY_EC = set("EC")
 local KTY_OKP = set("OKP")
-local KTY_ECDH = set("EC", "OKP")
 
 -- which keys an alg may use (RFC 7518 3.1 and 4.1, RFC 8037)
 --   kty/crv: allowed key types and curves; desc: for failure reasons
@@ -435,14 +434,12 @@ local alg_requirements = {
   ["RSA-OAEP-256"] = jwe(KTY_RSA, "an RSA", OPS_UNWRAP_DECRYPT, true),
   ["RSA-OAEP-384"] = jwe(KTY_RSA, "an RSA", OPS_UNWRAP_DECRYPT, true),
   ["RSA-OAEP-512"] = jwe(KTY_RSA, "an RSA", OPS_UNWRAP_DECRYPT, true),
-  ["ECDH-ES"] = jwe(KTY_ECDH, "an EC or X25519/X448", OPS_DERIVE, true,
-    set("P-256", "P-384", "P-521", "X25519", "X448")),
-  ["ECDH-ES+A128KW"] = jwe(KTY_ECDH, "an EC or X25519/X448", OPS_DERIVE, true,
-    set("P-256", "P-384", "P-521", "X25519", "X448")),
-  ["ECDH-ES+A192KW"] = jwe(KTY_ECDH, "an EC or X25519/X448", OPS_DERIVE, true,
-    set("P-256", "P-384", "P-521", "X25519", "X448")),
-  ["ECDH-ES+A256KW"] = jwe(KTY_ECDH, "an EC or X25519/X448", OPS_DERIVE, true,
-    set("P-256", "P-384", "P-521", "X25519", "X448")),
+  -- ECDH-ES with X25519/X448 (RFC 8037) isn't supported: the epk validation
+  -- in resty.jwt accepts EC keys only
+  ["ECDH-ES"] = jwe(KTY_EC, "an EC", OPS_DERIVE, true),
+  ["ECDH-ES+A128KW"] = jwe(KTY_EC, "an EC", OPS_DERIVE, true),
+  ["ECDH-ES+A192KW"] = jwe(KTY_EC, "an EC", OPS_DERIVE, true),
+  ["ECDH-ES+A256KW"] = jwe(KTY_EC, "an EC", OPS_DERIVE, true),
 }
 
 -- key_ops a JWS operation needs

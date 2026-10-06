@@ -12,6 +12,7 @@ local kdf = require "resty.openssl.kdf"
 local utils = require "resty.utils"
 local jwt_validators = require "resty.jwt-validators"
 local jwt_zlib = require "resty.jwt-zlib"
+local jwk = require "resty.jwt.jwk"
 local bit = require "bit"
 
 local _M = { _VERSION = "0.3.2" }
@@ -293,6 +294,8 @@ _M.legacy_ecdh_kw_kdf = false
 
 -- RFC 7518 Section 4.6: validate the ephemeral public key ("epk") against the
 -- recipient's EC private key and compute the ECDH shared secret Z
+--@param private_key_pem the EC private key: a PEM string or a
+-- resty.openssl.pkey (from a JWK or key object); the same checks apply to both
 local function ecdh_es_shared_secret(header, private_key_pem)
     if not private_key_pem then
         error({reason="EC private key must not be null"})
@@ -315,7 +318,10 @@ local function ecdh_es_shared_secret(header, private_key_pem)
         error({reason="invalid epk in JWE header"})
     end
 
-    local private_key, priv_err = pkey.new(private_key_pem)
+    local private_key, priv_err = private_key_pem, nil
+    if not pkey.istype(private_key) then
+        private_key, priv_err = pkey.new(private_key_pem)
+    end
     if not private_key then
         error({reason="failed to load EC private key: " .. (priv_err or "")})
     end
@@ -803,6 +809,132 @@ local function get_zip_max_size(self, compressed_len)
   return max_size
 end
 
+--@function true if s is exactly one DER SEQUENCE (its outer length matches
+-- the string length): the cheap test before parsing s as a key or certificate
+local function is_der_sequence(s)
+  local n = #s
+  if n < 2 or string_byte(s, 1) ~= 0x30 then
+    return false
+  end
+  local b = string_byte(s, 2)
+  if b < 0x80 then
+    return n == 2 + b
+  end
+  local nb = b - 0x80
+  if nb < 1 or nb > 3 or n < 2 + nb then
+    return false
+  end
+  local len = 0
+  for i = 3, 2 + nb do
+    len = len * 256 + string_byte(s, i)
+  end
+  return n == 2 + nb + len
+end
+
+--@function why a string can't be used as a symmetric secret (HMAC key, AES
+-- key wrap key, PBES2 password). Asymmetric key material is typically public,
+-- so accepting it as a shared secret lets anyone forge tokens (RS/HS key
+-- confusion, CVE-2015-9235).
+--@param secret string
+--@param what "an HMAC secret" or "a symmetric key", for the reason
+--@return nil if acceptable, failure reason otherwise
+local function symmetric_secret_rejection(secret, what)
+  if secret == str_const.empty then
+    return "empty secret"
+  end
+  if secret:find(str_const.pem_begin, 1, true) then
+    return "PEM key material cannot be used as " .. what
+  end
+  if is_der_sequence(secret)
+      and (pkey.new(secret, { format = "DER" }) or x509.new(secret, "DER")) then
+    return "DER key material cannot be used as " .. what
+  end
+  return nil
+end
+
+-- symmetric JWE key management algorithms: the key is a shared secret
+local symmetric_jwe_algs = {
+  [str_const.DIR] = true,
+  [str_const.A128KW] = true, [str_const.A192KW] = true, [str_const.A256KW] = true,
+  [str_const.A128GCMKW] = true, [str_const.A192GCMKW] = true, [str_const.A256GCMKW] = true,
+  [str_const.PBES2_HS256_A128KW] = true, [str_const.PBES2_HS384_A192KW] = true,
+  [str_const.PBES2_HS512_A256KW] = true,
+}
+
+--@function select the key for a token from a key object, JWK, JWK Set, pkey
+-- or x509 secret (see resty.jwt.jwk)
+--@param purpose "verify", "sign" or "decrypt"
+--@return key set entry; nil if `secret` is a plain (string/function) secret;
+-- nil, reason if no usable key
+local function select_key(secret, alg, header, purpose)
+  local keyset, err = jwk.to_keyset(secret)
+  if not keyset then
+    return nil, err
+  end
+  return jwk.select(keyset, alg, header[str_const.kid], purpose)
+end
+
+--@function check that a JWE decryption key fits the key management alg
+--@return nil if it does, failure reason otherwise
+local function check_jwe_key_type(alg, pk)
+  local ok, key_type = pcall(pk.get_key_type, pk)
+  local sn = ok and type(key_type) == str_const.table and key_type.sn or nil
+  if alg == str_const.RSA_OAEP or alg == str_const.RSA_OAEP_256
+      or alg == str_const.RSA_OAEP_384 or alg == str_const.RSA_OAEP_512 then
+    if sn == "rsaEncryption" then
+      return nil
+    end
+    return "key type mismatch: alg " .. alg .. " requires an RSA key"
+  end
+  -- ECDH-ES*: the epk validation in ecdh_es_shared_secret is EC only
+  if sn == "id-ecPublicKey" then
+    return nil
+  end
+  return "key type mismatch: alg " .. alg .. " requires an EC key"
+end
+
+--@function resolve the key a JWE is decrypted with
+--@return for symmetric algs the raw secret; for RSA-OAEP/ECDH-ES a
+-- resty.openssl.pkey, or the PEM string as given (legacy path); nil if no key
+local function get_jwe_key(secret, alg, header)
+  if secret == nil then
+    return nil
+  end
+  local entry, reason = select_key(secret, alg, header, "decrypt")
+  if reason then
+    error({reason=reason})
+  end
+
+  if symmetric_jwe_algs[alg] then
+    local key = entry and entry.k or secret
+    if type(key) ~= str_const.string then
+      error({reason="invalid key for " .. alg .. ": expected a string or an oct JWK"})
+    end
+    local rejection = symmetric_secret_rejection(key, "a symmetric key")
+    if rejection then
+      error({reason="invalid key for " .. alg .. ": " .. rejection})
+    end
+    return key
+  end
+
+  if not entry then
+    -- PEM strings are loaded in the alg branches, as before
+    if type(secret) ~= str_const.string then
+      error({reason="invalid key for " .. alg .. ": expected a PEM string, a JWK or a key object"})
+    end
+    return secret
+  end
+  local pk, err = jwk.get_pkey(entry)
+  if not pk then
+    error({reason=err})
+  end
+  local key_err = check_jwe_key_type(alg, pk)
+  if key_err then
+    error({reason=key_err})
+  end
+  return pk
+end
+
 --@function parse_jwe
 --@param pre-shared key
 --@encoded-header
@@ -870,22 +1002,26 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     zip_handler = require_compression_alg(self, header.zip)
   end
 
+  -- resolves JWK/JWKS/key object secrets and rejects keys that don't fit alg
+  -- (e.g. public key material as a PBES2 password); before any key work
+  local jwe_key = get_jwe_key(preshared_key, alg, header)
+
   local key, enc_key, _
   if alg == str_const.DIR then
     if not preshared_key  then
         error({reason="preshared key must not be null"})
     end
-    key, _, enc_key = derive_keys(header.enc, preshared_key)
+    key, _, enc_key = derive_keys(header.enc, jwe_key)
   elseif alg == str_const.ECDH_ES then
     -- RFC 7516 Section 5.2 step 10: direct key agreement has an empty encrypted key
     if encoded_encrypted_key ~= str_const.empty then
         error({reason="JWE encrypted key must be empty for ECDH-ES"})
     end
-    local Z = ecdh_es_shared_secret(header, preshared_key)
+    local Z = ecdh_es_shared_secret(header, jwe_key)
     local derived_key = derive_shared_key(header, Z)
     key, _, enc_key = derive_keys(header.enc, derived_key)
   elseif alg == str_const.ECDH_ES_A128KW or alg == str_const.ECDH_ES_A192KW or alg == str_const.ECDH_ES_A256KW then
-    local Z = ecdh_es_shared_secret(header, preshared_key)
+    local Z = ecdh_es_shared_secret(header, jwe_key)
     local wrapped_key = encoded_encrypted_key and _M:jwt_decode(encoded_encrypted_key)
     if not wrapped_key then
         error({reason="missing JWE encrypted key"})
@@ -906,7 +1042,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
         error({reason="AES key wrap key must not be null"})
     end
     local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
-    local secret_key = check_cek_len(enc, aes_key_unwrap(preshared_key, wrapped_key))
+    local secret_key = check_cek_len(enc, aes_key_unwrap(jwe_key, wrapped_key))
     key, _, enc_key = derive_keys(header.enc, secret_key)
   elseif alg == str_const.A128GCMKW or alg == str_const.A192GCMKW or alg == str_const.A256GCMKW then
     if not preshared_key then
@@ -918,7 +1054,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
         error({reason="missing iv/tag in header for AES-GCM key wrap"})
     end
     local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
-    local secret_key = check_cek_len(enc, aes_gcm_key_unwrap(preshared_key, wrapped_key, kw_iv, kw_tag))
+    local secret_key = check_cek_len(enc, aes_gcm_key_unwrap(jwe_key, wrapped_key, kw_iv, kw_tag))
     key, _, enc_key = derive_keys(header.enc, secret_key)
   elseif alg == str_const.PBES2_HS256_A128KW or alg == str_const.PBES2_HS384_A192KW or alg == str_const.PBES2_HS512_A256KW then
     if not preshared_key then
@@ -939,7 +1075,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     if not p2s or #p2s < PBES2_MIN_SALT_LEN then
         error({reason="invalid p2s in header for PBES2"})
     end
-    local kek = pbes2_derive_kek(alg, preshared_key, p2s, p2c)
+    local kek = pbes2_derive_kek(alg, jwe_key, p2s, p2c)
     local wrapped_key = _M:jwt_decode(encoded_encrypted_key)
     local secret_key = check_cek_len(enc, aes_key_unwrap(kek, wrapped_key))
     key, _, enc_key = derive_keys(header.enc, secret_key)
@@ -955,11 +1091,18 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
       [str_const.RSA_OAEP_512] = evp.CONST.SHA512_DIGEST,
     }
     local digest_alg = oaep_digest[alg]
-    local rsa_decryptor, err = evp.RSADecryptor:new(preshared_key, nil, evp.CONST.RSA_PKCS1_OAEP_PADDING, digest_alg)
-    if err then
-        error({reason="failed to create rsa object: ".. err})
+    local encrypted_key = _M:jwt_decode(encoded_encrypted_key) or ""
+    local secret_key, err
+    if type(jwe_key) == str_const.string then
+      local rsa_decryptor, rsa_err = evp.RSADecryptor:new(jwe_key, nil, evp.CONST.RSA_PKCS1_OAEP_PADDING, digest_alg)
+      if rsa_err then
+          error({reason="failed to create rsa object: ".. rsa_err})
+      end
+      secret_key, err = rsa_decryptor:decrypt(encrypted_key)
+    else
+      secret_key, err = jwe_key:decrypt(encrypted_key, pkey.PADDINGS.RSA_PKCS1_OAEP_PADDING,
+        { oaep_md = digest_alg })
     end
-    local secret_key, err = rsa_decryptor:decrypt(_M:jwt_decode(encoded_encrypted_key))
     local cek_len = keydatalen_map[enc] / 8
     if err or not secret_key or #secret_key ~= cek_len then
       -- RFC 7516 11.5: on a CEK decryption error continue with a random CEK so
@@ -1461,11 +1604,14 @@ local function sign_jwe(self, secret_key, jwt_obj)
   return table_concat(jwe_table, ".", 1, 5)
 end
 
---@function get_secret_str  : returns the secret if it is a string, or the result of a function
---@param either the string secret or a function that takes a string parameter and returns a string or nil
+--@function get_secret_str  : returns the HMAC secret: the secret if it is a string, the result of a
+-- function, or the "k" of the oct JWK selected from a JWK, JWK Set or key object
+--@param either the string secret, a function that takes a string parameter and returns a string or nil,
+-- or a JWK/JWK Set (table or JSON string) or a key object from resty.jwt.jwk
 --@param  jwt payload
---@return the secret as a string or as a function
-local function get_secret_str(secret_or_function, jwt_obj)
+--@param purpose "sign" or "verify"
+--@return the secret as a string
+local function get_secret_str(secret_or_function, jwt_obj, purpose)
   if type(secret_or_function) == str_const.funct then
     -- Only use with hmac algorithms
     local alg = jwt_obj[str_const.header][str_const.alg]
@@ -1491,12 +1637,21 @@ local function get_secret_str(secret_or_function, jwt_obj)
       error({reason="function returned a non-string secret for kid: " .. kid_val})
     end
     return secret_str
+  end
+
+  local header = jwt_obj[str_const.header]
+  local entry, reason = select_key(secret_or_function, header[str_const.alg], header, purpose)
+  if entry then
+    -- an oct key: selection rejects every other kty for HS*
+    return entry.k
+  elseif reason then
+    error({reason=reason})
   elseif type(secret_or_function) == str_const.string then
     -- Just return the string
     return secret_or_function
   else
     -- Throw an error
-    error({reason="invalid secret type (must be string or function)"})
+    error({reason="invalid secret type (must be string, function, JWK or key object)"})
   end
 end
 
@@ -1519,8 +1674,9 @@ local function hmac_sign(alg, secret, message)
   end
   -- An asymmetric key is public, so using one as an HMAC secret lets anyone
   -- forge tokens (RS/HS key confusion, CVE-2015-9235)
-  if secret:find(str_const.pem_begin, 1, true) then
-    error({reason="invalid secret for " .. alg .. ": PEM key material cannot be used as an HMAC secret"})
+  local rejection = symmetric_secret_rejection(secret, "an HMAC secret")
+  if rejection then
+    error({reason="invalid secret for " .. alg .. ": " .. rejection})
   end
   return hmac:new(secret, spec.algo):final(message)
 end
@@ -1594,7 +1750,7 @@ end
 --@function verify the HMAC signature of a JWS object
 --@return nil on success, failure reason otherwise
 local function verify_hmac_signature(secret, jwt_obj, alg)
-  local secret_str = get_secret_str(secret, jwt_obj)
+  local secret_str = get_secret_str(secret, jwt_obj, "verify")
   local raw_header = get_raw_part(str_const.header, jwt_obj)
   local raw_payload = get_raw_part(str_const.payload, jwt_obj)
   local message = string_format(str_const.regex_join_msg, raw_header, raw_payload)
@@ -1643,7 +1799,7 @@ function _M.sign(self, secret_key, jwt_obj)
   local alg = jwt_obj[str_const.header][str_const.alg]
   local signature = ""
   if hmac_algs[alg] then
-    local secret_str = get_secret_str(secret_key, jwt_obj)
+    local secret_str = get_secret_str(secret_key, jwt_obj, "sign")
     signature = hmac_sign(alg, secret_str, message)
   elseif alg == str_const.RS256 or alg == str_const.RS384 or alg == str_const.RS512
       or alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512 then
@@ -2012,7 +2168,7 @@ local function verify_jws_signature(self, secret, jwt_obj)
   elseif alg == str_const.RS256 or alg == str_const.RS384 or alg == str_const.RS512
       or alg == str_const.PS256 or alg == str_const.PS384 or alg == str_const.PS512
       or alg == str_const.ES256 or alg == str_const.ES384 or alg == str_const.ES512 then
-    local cert, cert_str, err
+    local cert, cert_str, err, pk
     if self.trusted_certs_file ~= nil then
       cert_str = extract_certificate(jwt_obj, self.x5u_content_retriever)
       if not cert_str then
@@ -2030,7 +2186,20 @@ local function verify_jws_signature(self, secret, jwt_obj)
         return jwt_obj
       end
     elseif secret ~= nil then
-      if type(secret) ~= str_const.string then
+      local entry, reason = select_key(secret, alg, jwt_obj[str_const.header], "verify")
+      if reason then
+        jwt_obj[str_const.reason] = reason
+        return jwt_obj
+      end
+      if entry then
+        pk, err = jwk.get_pkey(entry)
+        if not pk then
+          jwt_obj[str_const.reason] = err
+          return jwt_obj
+        end
+        -- the evp verifiers only need the EVP_PKEY of a Cert/PublicKey
+        cert = { public_key = pk.ctx }
+      elseif type(secret) ~= str_const.string then
         cert = nil
       elseif secret:find("CERTIFICATE") then
         cert, err = evp.Cert:new(secret)
@@ -2046,11 +2215,14 @@ local function verify_jws_signature(self, secret, jwt_obj)
       return jwt_obj
     end
 
-    local key_str = self.trusted_certs_file ~= nil and cert_str or secret
-    local load_ok, pk = pcall(load_verify_pkey, key_str)
-    if not load_ok or not pk then
-      jwt_obj[str_const.reason] = "Unable to determine the verification key type"
-      return jwt_obj
+    if not pk then
+      local key_str = self.trusted_certs_file ~= nil and cert_str or secret
+      local load_ok
+      load_ok, pk = pcall(load_verify_pkey, key_str)
+      if not load_ok or not pk then
+        jwt_obj[str_const.reason] = "Unable to determine the verification key type"
+        return jwt_obj
+      end
     end
     local key_err = check_key_type(alg, pk)
     if key_err then
@@ -2098,8 +2270,15 @@ local function verify_jws_signature(self, secret, jwt_obj)
       jwt_obj[str_const.reason] = err or "signature verification failed"
     end
   elseif alg == str_const.Ed25519 or alg == str_const.Ed448 or alg == str_const.EdDSA then
+    local entry, reason = select_key(secret, alg, jwt_obj[str_const.header], "verify")
+    if reason then
+      jwt_obj[str_const.reason] = reason
+      return jwt_obj
+    end
     local pk, pk_err
-    if type(secret) == str_const.string then
+    if entry then
+      pk, pk_err = jwk.get_pkey(entry)
+    elseif type(secret) == str_const.string then
       local load_ok
       load_ok, pk, pk_err = pcall(load_verify_pkey, secret)
       if not load_ok then
@@ -2397,6 +2576,17 @@ end
 
 _M.zip_max_size = nil
 
+
+--- Parse a key once for reuse as the key argument of verify, verify_with,
+-- verify_jwt_obj and load_jwt (and of sign for HS* with an oct JWK).
+-- See resty.jwt.jwk.load.
+--
+-- @param key a JWK or JWK Set (table or JSON string), a PEM/DER key or
+--            certificate, a resty.openssl.pkey or a resty.openssl.x509
+-- @return key object, or nil, error
+function _M.load_key(self, key)
+  return jwk.load(key)
+end
 
 function _M.new()
     return setmetatable({}, mt)
