@@ -663,3 +663,24 @@ GET /t
 2 false Claim 'sub' ('bob') returned failure
 --- no_error_log
 [error]
+
+
+=== TEST 18: RS/PS sign failures raise a clean reason instead of crashing
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local pkey = require "resty.openssl.pkey"
+            -- PSS with SHA-512 needs a modulus of at least 130 bytes; 512 bits is too small
+            local small = pkey.new({type="RSA", bits=512}):to_PEM("private")
+            local ok, err = pcall(jwt.sign, jwt, small, {header={typ="JWT", alg="PS512"}, payload={foo="bar"}})
+            ngx.say(ok, " ", type(err) == "table" and err.reason:find("^signature error: ") ~= nil)
+        }
+    }
+--- request
+GET /t
+--- response_body
+false true
+--- no_error_log
+[error]

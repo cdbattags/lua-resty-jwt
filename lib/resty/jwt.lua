@@ -1280,11 +1280,14 @@ function _M.sign(self, secret_key, jwt_obj)
       error({reason="signer error: " .. (err or "")})
     end
     if alg == str_const.RS256 or alg == str_const.PS256 then
-      signature = signer:sign(message, evp.CONST.SHA256_DIGEST)
+      signature, err = signer:sign(message, evp.CONST.SHA256_DIGEST)
     elseif alg == str_const.RS384 or alg == str_const.PS384 then
-      signature = signer:sign(message, evp.CONST.SHA384_DIGEST)
+      signature, err = signer:sign(message, evp.CONST.SHA384_DIGEST)
     elseif alg == str_const.RS512 or alg == str_const.PS512 then
-      signature = signer:sign(message, evp.CONST.SHA512_DIGEST)
+      signature, err = signer:sign(message, evp.CONST.SHA512_DIGEST)
+    end
+    if not signature then
+      error({reason="signature error: " .. (err or "")})
     end
   elseif alg == str_const.ES256 or alg == str_const.ES384 or alg == str_const.ES512 then
     local signer, err = evp.ECSigner:new(secret_key)
@@ -1292,13 +1295,16 @@ function _M.sign(self, secret_key, jwt_obj)
       error({reason="signer error: " .. (err or "")})
     end
     -- OpenSSL will generate a DER encoded signature that needs to be converted
-    local der_signature = ""
+    local der_signature
     if alg == str_const.ES256 then
-      der_signature = signer:sign(message, evp.CONST.SHA256_DIGEST)
+      der_signature, err = signer:sign(message, evp.CONST.SHA256_DIGEST)
     elseif alg == str_const.ES384 then
-      der_signature = signer:sign(message, evp.CONST.SHA384_DIGEST)
+      der_signature, err = signer:sign(message, evp.CONST.SHA384_DIGEST)
     elseif alg == str_const.ES512 then
-      der_signature = signer:sign(message, evp.CONST.SHA512_DIGEST)
+      der_signature, err = signer:sign(message, evp.CONST.SHA512_DIGEST)
+    end
+    if not der_signature then
+      error({reason="signature error: " .. (err or "")})
     end
     -- Perform DER to RAW signature conversion
     signature, err = signer:get_raw_sig(der_signature)
