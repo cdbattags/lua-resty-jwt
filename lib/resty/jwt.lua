@@ -1224,9 +1224,9 @@ local function parse_jwt(self, encoded_header, encoded_payload, signature)
   end
 
   -- Try JSON decoding first; fall back to raw string for non-JSON payloads (RFC 7515)
-  local payload = _M:jwt_decode(encoded_payload, true, true)
+  local payload = _M.jwt_decode(self, encoded_payload, true, true)
   if not payload then
-    payload = _M:jwt_decode(encoded_payload, false)
+    payload = _M.jwt_decode(self, encoded_payload, false)
     if not payload then
       error({reason="invalid payload: " .. encoded_payload})
     end

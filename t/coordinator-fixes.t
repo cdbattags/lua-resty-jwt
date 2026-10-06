@@ -89,3 +89,28 @@ GET /t
 false invalid key for A128KW: expected a 16-byte key
 --- no_error_log
 [error]
+
+
+
+=== TEST 4: a per-instance payload decoder is used when loading a JWS
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local token = jwt:sign("instance-decoder-secret", { header = { typ = "JWT", alg = "HS256" }, payload = { foo = "bar" } })
+            local j = jwt.new()
+            j:set_payload_decoder(function(s) return { decoded_by = "instance", raw = s } end)
+            local obj = j:verify("instance-decoder-secret", token)
+            ngx.say(tostring(obj.verified), " ", obj.payload.decoded_by)
+            -- the module-level decoder is unaffected
+            ngx.say(jwt:verify("instance-decoder-secret", token).payload.foo)
+        }
+    }
+--- request
+GET /t
+--- response_body
+true instance
+bar
+--- no_error_log
+[error]
