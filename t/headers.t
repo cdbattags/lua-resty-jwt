@@ -558,3 +558,162 @@ true everything is awesome~ :p
 false Header 'kid' ('k1') returned failure
 --- no_error_log
 [error]
+
+
+
+=== TEST 15: JWS needs exactly 3 non-empty parts (no alg "none" empty signature)
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local p = split(hs_token("secret", { alg = "HS256" }))
+            local none = jwt:jwt_encode('{"alg":"none"}')
+            local cases = {
+                { "valid", join(p) },
+                { "empty header", join({ "", p[2], p[3] }) },
+                { "empty payload", join({ p[1], "", p[3] }) },
+                { "empty signature", join({ p[1], p[2], "" }) },
+                { "alg none", join({ none, p[2], "" }) },
+                { "two parts", join({ p[1], p[2] }) },
+                { "trailing dot", join(p) .. "." },
+                { "leading dot", "." .. join(p) },
+                { "doubled first dot", p[1] .. ".." .. p[2] .. "." .. p[3] },
+                { "doubled second dot", p[1] .. "." .. p[2] .. ".." .. p[3] },
+                { "quadrupled dot", p[1] .. "." .. p[2] .. "...." .. p[3] },
+                { "all dots doubled", p[1] .. ".." .. p[2] .. ".." .. p[3] },
+                { "all dots", "...." },
+                { "empty", "" },
+                { "six parts", join(p) .. "..." },
+            }
+            for _, c in ipairs(cases) do
+                local obj = jwt:verify("secret", c[2])
+                ngx.say(c[1], ": ", obj.verified, " ", obj.reason)
+            end
+            local obj = jwt:load_jwt(nil)
+            ngx.say("nil: ", obj.valid, " ", obj.reason)
+            obj = jwt:verify_with("secret", "." .. p[2] .. "." .. p[3], { algorithms = { "HS256" } })
+            ngx.say("verify_with empty header: ", obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+valid: true everything is awesome~ :p
+empty header: false invalid jwt string: empty header
+empty payload: false invalid jwt string: empty payload
+empty signature: false invalid jwt string: empty signature
+alg none: false invalid jwt string: empty signature
+two parts: false invalid jwt string
+trailing dot: false invalid jwt string
+leading dot: false invalid jwt string
+doubled first dot: false invalid jwt string
+doubled second dot: false invalid jwt string
+quadrupled dot: false invalid jwt string
+all dots doubled: false invalid jwt string: empty ciphertext
+all dots: false invalid jwt string: empty header
+empty: false invalid jwt string
+six parts: false invalid jwt string
+nil: false invalid jwt string
+verify_with empty header: false invalid jwt string: empty header
+--- no_error_log
+[error]
+
+
+
+=== TEST 16: JWE dir/ECDH-ES need an empty encrypted key, other algs a non-empty one
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function say(label, obj)
+                ngx.say(label, ": ", obj.verified, " ", obj.reason)
+            end
+
+            -- dir: produced by this library
+            local dir = dir_token({})
+            say("dir", jwt:verify(DIR_KEY, dir))
+            local p = split(dir)
+            p[2] = "AAAA"
+            say("dir with key", jwt:verify(DIR_KEY, join(p)))
+            -- the empty key part is no longer collapsed: 4 parts are invalid
+            p = split(dir)
+            table.remove(p, 2)
+            say("dir 4 parts", jwt:verify(DIR_KEY, join(p)))
+            say("dir trailing dot", jwt:verify(DIR_KEY, dir .. "."))
+            say("dir leading dot", jwt:verify(DIR_KEY, "." .. dir))
+            p = split(dir)
+            say("dir doubled dot", jwt:verify(DIR_KEY, join({ p[1], p[2], p[3], p[4] }) .. ".." .. p[5]))
+
+            -- dir: produced by another implementation (t/load-verify-jwe.t TEST 1)
+            say("dir foreign", jwt:verify(
+                "12341234123412341234123412341234" .. "12341234123412341234123412341234",
+                "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIn0." ..
+                ".M927Z_hNTmumFQE0rtRQCQ.nnd7AoE_2dgvws2-iay8qA.d" ..
+                "kyZuuks4Qm9Cd7VfEVSs07pi_Kyt0INVHTTesUC2BM"))
+
+            -- ECDH-ES (direct key agreement)
+            local ecdh = jwt:sign(read_file("ec_cert_pubkey.pem"),
+                { header = { alg = "ECDH-ES", enc = "A128GCM" }, payload = { foo = "bar" } })
+            say("ECDH-ES", jwt:verify(read_file("ec_cert-key.pem"), ecdh))
+            p = split(ecdh)
+            p[2] = "AAAA"
+            say("ECDH-ES with key", jwt:verify(read_file("ec_cert-key.pem"), join(p)))
+
+            -- key wrapping: the encrypted key is mandatory
+            local kw_key = "0123456789abcdef"
+            local kw = jwt:sign(kw_key, { header = { alg = "A128KW", enc = "A128GCM" }, payload = { foo = "bar" } })
+            say("A128KW", jwt:verify(kw_key, kw))
+            p = split(kw)
+            p[2] = ""
+            say("A128KW without key", jwt:verify(kw_key, join(p)))
+        }
+    }
+--- request
+GET /t
+--- response_body
+dir: true everything is awesome~ :p
+dir with key: false JWE encrypted key must be empty for dir
+dir 4 parts: false invalid jwt string
+dir trailing dot: false invalid jwt string
+dir leading dot: false invalid jwt string
+dir doubled dot: false invalid jwt string
+dir foreign: true everything is awesome~ :p
+ECDH-ES: true everything is awesome~ :p
+ECDH-ES with key: false JWE encrypted key must be empty for ECDH-ES
+A128KW: true everything is awesome~ :p
+A128KW without key: false missing JWE encrypted key
+--- no_error_log
+[error]
+
+
+
+=== TEST 17: JWE header, iv, ciphertext and tag must be non-empty
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local names = { "header", "encrypted key", "iv", "ciphertext", "tag" }
+            for _, i in ipairs({ 1, 3, 4, 5 }) do
+                local p = split(dir_token({}))
+                p[i] = ""
+                local obj = jwt:verify(DIR_KEY, join(p))
+                ngx.say(names[i], ": ", obj.verified, " ", obj.reason)
+            end
+            -- t/load-verify-jwe.t TEST 3: junk appended to the tag is rejected
+            local obj = jwt:verify(DIR_KEY, dir_token({}) .. "xxx")
+            ngx.say("tag junk: ", obj.verified, " ", obj.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+header: false invalid jwt string: empty header
+iv: false invalid jwt string: empty initialization vector
+ciphertext: false invalid jwt string: empty ciphertext
+tag: false invalid jwt string: empty authentication tag
+tag junk: false invalid JWE authentication tag length
+--- no_error_log
+[error]

@@ -22,6 +22,7 @@ local mt = {
 local string_rep = string.rep
 local string_format = string.format
 local string_sub = string.sub
+local string_find = string.find
 local string_char = string.char
 local string_byte = string.byte
 local math_floor = math.floor
@@ -47,8 +48,6 @@ local pairs = pairs
 local str_const = {
   invalid_jwt= "invalid jwt string",
   regex_join_msg = "%s.%s",
-  regex_join_delim = "([^%s]+)",
-  regex_split_dot = "%.",
   regex_jwt_join_str = "%s.%s.%s",
   raw_underscore  = "raw_",
   dash = "-",
@@ -139,14 +138,22 @@ local str_const = {
   everything_awesome = "everything is awesome~ :p"
 }
 
--- @function split string
-local function split_string(str, delim)
-  local result = {}
-  local sep = string_format(str_const.regex_join_delim, delim)
-  for m in str:gmatch(sep) do
-    result[#result+1]=m
+-- @function split a compact serialization on ".", keeping empty parts
+-- (a JWE using "dir" or "ECDH-ES" has an empty encrypted key). Stops after 6
+-- parts: anything beyond 5 is invalid anyway.
+local function split_token(str)
+  local parts = {}
+  local start = 1
+  while #parts < 6 do
+    local dot = string_find(str, ".", start, true)
+    if not dot then
+      parts[#parts + 1] = string_sub(str, start)
+      break
+    end
+    parts[#parts + 1] = string_sub(str, start, dot - 1)
+    start = dot + 1
   end
-  return result
+  return parts
 end
 
 -- @function is nil or boolean
@@ -788,6 +795,17 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     end
   end
 
+  -- RFC 7516 5.2 step 11: direct encryption uses an empty JWE Encrypted Key
+  -- (as does ECDH-ES, checked in its branch below), every other alg a
+  -- non-empty one
+  if alg == str_const.DIR then
+    if encoded_encrypted_key ~= str_const.empty then
+      error({reason="JWE encrypted key must be empty for dir"})
+    end
+  elseif alg ~= str_const.ECDH_ES and (encoded_encrypted_key == nil or encoded_encrypted_key == str_const.empty) then
+    error({reason="missing JWE encrypted key"})
+  end
+
   local key, enc_key, _
   if alg == str_const.DIR then
     if not preshared_key  then
@@ -796,7 +814,7 @@ local function parse_jwe(self, preshared_key, encoded_header, encoded_encrypted_
     key, _, enc_key = derive_keys(header.enc, preshared_key)
   elseif alg == str_const.ECDH_ES then
     -- RFC 7516 Section 5.2 step 10: direct key agreement has an empty encrypted key
-    if encoded_encrypted_key ~= nil then
+    if encoded_encrypted_key ~= str_const.empty then
         error({reason="JWE encrypted key must be empty for ECDH-ES"})
     end
     local Z = ecdh_es_shared_secret(header, preshared_key)
@@ -971,18 +989,35 @@ end
 -- @function parse token - this can be JWE or JWT token
 -- @param token string
 -- @return jwt/jwe tables
+local jws_part_names = { "header", "payload", "signature" }
+-- part 2 (encrypted key) is checked against the alg in parse_jwe
+local jwe_part_names = { "header", nil, "initialization vector", "ciphertext", "authentication tag" }
+
 local function parse(self, secret, token_str)
-  local tokens = split_string(token_str, str_const.regex_split_dot)
-  local num_tokens = #tokens
-  if num_tokens == 3 then
-    return  parse_jwt(self, tokens[1], tokens[2], tokens[3])
-  elseif num_tokens == 4  then
-    return parse_jwe(self, secret, tokens[1], nil, tokens[2], tokens[3],  tokens[4])
-  elseif num_tokens == 5 then
-    return parse_jwe(self, secret, tokens[1], tokens[2], tokens[3],  tokens[4], tokens[5])
+  if type(token_str) ~= str_const.string then
+    error({reason=str_const.invalid_jwt})
+  end
+  local parts = split_token(token_str)
+  local num_parts = #parts
+  local part_names
+  if num_parts == 3 then
+    -- an empty signature is invalid as well: alg "none" is not supported
+    part_names = jws_part_names
+  elseif num_parts == 5 then
+    part_names = jwe_part_names
   else
     error({reason=str_const.invalid_jwt})
   end
+  for i = 1, num_parts do
+    if part_names[i] and parts[i] == str_const.empty then
+      error({reason=str_const.invalid_jwt .. ": empty " .. part_names[i]})
+    end
+  end
+
+  if num_parts == 3 then
+    return parse_jwt(self, parts[1], parts[2], parts[3])
+  end
+  return parse_jwe(self, secret, parts[1], parts[2], parts[3], parts[4], parts[5])
 end
 
 --@function jwt encode : it converts into base64 encoded string. if input is a table, it convets into
@@ -2074,7 +2109,7 @@ function _M.verify_with(self, secret, jwt_str, options)
   if type(jwt_str) ~= str_const.string then
     return {verified=false, reason=str_const.invalid_jwt}
   end
-  local encoded_header = split_string(jwt_str, str_const.regex_split_dot)[1]
+  local encoded_header = split_token(jwt_str)[1]
   local header = encoded_header and _M:jwt_decode(encoded_header, true)
   if type(header) == str_const.table then
     local alg = header[str_const.alg]
