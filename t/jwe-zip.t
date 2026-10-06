@@ -779,3 +779,97 @@ over cap: failed to decrypt JWE
 bad module: false zlib module must expose deflate and inflate functions (pass `require "zlib"`)
 --- no_error_log
 [error]
+
+
+
+=== TEST 16: JWE sign and verify errors never echo the key, password or secret
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua_block {
+            local jwt = require "resty.jwt"
+            local function get_testcert(name)
+                local f = io.open("/lua-resty-jwt/testcerts/" .. name)
+                local contents = f:read("*all")
+                f:close()
+                return contents
+            end
+            local secrets = {
+                { "RSA private key", get_testcert("cert-key.pem") },
+                { "EC private key", get_testcert("ec_cert-key.pem") },
+                { "HMAC secret", "my-hmac-secret-0123456789abcdef" },
+            }
+            local function leaks(reason, secret)
+                if type(reason) ~= "string" then
+                    return false
+                end
+                if reason:find(secret, 1, true) then
+                    return true
+                end
+                for line in secret:gmatch("[^\n]+") do
+                    if not line:find("-----", 1, true) and #line > 8
+                        and reason:find(line, 1, true) then
+                        return true
+                    end
+                end
+                return false
+            end
+            local good = {
+                dir = string.rep("k", 32),
+                ["RSA-OAEP"] = get_testcert("cert-pubkey.pem"),
+                ["RSA-OAEP-256"] = get_testcert("cert-pubkey.pem"),
+                ["ECDH-ES"] = get_testcert("ec_cert_pubkey.pem"),
+                ["ECDH-ES+A128KW"] = get_testcert("ec_cert_pubkey.pem"),
+                A128KW = string.rep("k", 16),
+                A256GCMKW = string.rep("k", 32),
+                ["PBES2-HS256+A128KW"] = "password",
+            }
+            local algs = { "dir", "RSA-OAEP", "RSA-OAEP-256", "ECDH-ES", "ECDH-ES+A128KW",
+                           "A128KW", "A256GCMKW", "PBES2-HS256+A128KW" }
+            local checked, leaked = 0, 0
+            for _, alg in ipairs(algs) do
+                local token = jwt:sign(good[alg], {
+                    header = { alg = alg, enc = "A256GCM" },
+                    payload = { foo = "bar" },
+                })
+                for _, s in ipairs(secrets) do
+                    local ok, err = pcall(jwt.sign, jwt, s[2], {
+                        header = { alg = alg, enc = "A256GCM" },
+                        payload = { foo = "bar" },
+                    })
+                    local reason = not ok and (type(err) == "table" and err.reason or tostring(err))
+                    if leaks(reason, s[2]) then
+                        leaked = leaked + 1
+                        ngx.say("sign leak: ", alg, " ", s[1])
+                    end
+                    local obj = jwt:verify(s[2], token)
+                    if leaks(obj.reason, s[2]) then
+                        leaked = leaked + 1
+                        ngx.say("verify leak: ", alg, " ", s[1])
+                    end
+                    checked = checked + 2
+                end
+            end
+            ngx.say("checked: ", checked, " leaked: ", leaked)
+
+            -- the original report: a private key handed to RSA-OAEP signing
+            local ok, err = pcall(jwt.sign, jwt, get_testcert("cert-key.pem"), {
+                header = { alg = "RSA-OAEP-256", enc = "A256GCM" },
+                payload = { foo = "bar" },
+            })
+            ngx.say("rsa-oaep private key: ", ok, " ", err.reason)
+            ok, err = pcall(jwt.sign, jwt, "my-hmac-secret-0123456789abcdef", {
+                header = { alg = "RSA-OAEP", enc = "A256GCM" },
+                payload = { foo = "bar" },
+            })
+            ngx.say("rsa-oaep hmac secret: ", ok, " ", err.reason)
+        }
+    }
+--- request
+GET /t
+--- response_body
+checked: 48 leaked: 0
+rsa-oaep private key: false Decode secret is not a valid cert/public key: unsupported key format
+rsa-oaep hmac secret: false Decode secret is not a valid cert/public key: unsupported key format
+--- no_error_log
+[error]

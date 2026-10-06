@@ -1420,7 +1420,7 @@ local function sign_jwe(self, secret_key, jwt_obj)
         cert, err = evp.PublicKey:new(secret_key)
     end
     if not cert then
-        error({reason="Decode secret is not a valid cert/public key: " .. (err and err or secret_key)})
+        error({reason="Decode secret is not a valid cert/public key: " .. (err or "unsupported key format")})
     end
     local oaep_digest = {
       [str_const.RSA_OAEP] = evp.CONST.SHA1_DIGEST,

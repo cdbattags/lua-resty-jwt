@@ -330,7 +330,7 @@ invalid typ: INVALID
 --- request
 GET /t
 --- response_body
-Decode secret is not a valid cert/public key: invalid RSA
+Decode secret is not a valid cert/public key: unsupported key format
 --- no_error_log
 [error]
 
