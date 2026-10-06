@@ -1,0 +1,112 @@
+# Releasing
+
+Creating a GitHub release for tag `vX.Y.Z` runs
+[`publish.yml`](.github/workflows/publish.yml). The workflow checks that the
+tag matches `_VERSION`, runs `./ci`, and then uploads `X.Y.Z-1` to LuaRocks
+and `X.Y.Z` to OPM. Neither upload can be overwritten, so do every step
+below in order.
+
+## 1. Prepare (on the release branch, before merging to master)
+
+1. **Bump `_VERSION`** in `lib/resty/jwt.lua`. It is the only place a version
+   lives: OPM reads it, the tag must match it, and `t/version.t` fails if the
+   rockspec or `dist.ini` hard-codes one.
+2. **Write the release notes** (`CHANGELOG.md` if the repo has one by then,
+   otherwise the GitHub release body). Cover:
+   - breaking changes
+   - dependency floor changes (currently `lua-resty-openssl >= 1.1.0` on
+     LuaRocks and `>= 1.2.0` on OPM)
+   - deprecations: the vendored `resty.hmac` is still shipped in the rock but
+     is removed in 1.0 (OPM no longer pulls it in), and
+     `set_legacy_ecdh_kw_kdf` is removed in 1.0
+   - the GHSA IDs being fixed
+3. **Run the suite**: `./ci`
+4. **Dry-run both packages**: `./ci-release-dry-run X.Y.Z`. Nothing is
+   uploaded. The script works on a copy of the checkout in a throwaway
+   `cdbattags/openresty-testsuite` container and runs:
+
+   ```sh
+   # OPM, with a dummy ~/.opmrc whose upload_server is http://127.0.0.1:9
+   opm build                  # must report "extracted verson number X.Y.Z"
+   # loads every module from the tarball with only the OPM dependencies
+
+   # LuaRocks
+   luarocks new_version lua-resty-jwt-dev-0.rockspec X.Y.Z-1 \
+     git+https://github.com/cdbattags/lua-resty-jwt.git --tag=vX.Y.Z
+   luarocks lint lua-resty-jwt-X.Y.Z-1.rockspec
+   luarocks make lua-resty-jwt-X.Y.Z-1.rockspec   # builds from the checkout
+   prove -j4 -r t
+
+   # every rockspec module is in both packages, then publish.yml's guard
+   RELEASE_TAG=vX.Y.Z prove t/version.t
+   ```
+
+   It must end with `==> dry run OK for X.Y.Z`. During `new_version`,
+   LuaRocks prints a harmless `Warning: invalid URL ... git+https`, because
+   it can't fetch a git URL to checksum it.
+5. Merge to `master`.
+
+## 2. Tag and release
+
+```sh
+git checkout master && git pull --ff-only
+git tag -a vX.Y.Z -m "vX.Y.Z"          # on the merged master commit
+git push origin vX.Y.Z
+gh release create vX.Y.Z --verify-tag --title vX.Y.Z --notes-file NOTES.md
+```
+
+- Create it as a **published, non-draft** release. `publish.yml` triggers on
+  `release: created`, and GitHub does not fire that event for drafts.
+- Do not create a pre-release for a version you don't want on LuaRocks and
+  OPM. Pre-releases trigger the workflow too.
+
+Then watch the Actions run. The job order is `version` → `test` → `luarocks`
+and `opm` in parallel. If `version` or `test` fails, both uploads are skipped.
+
+## 3. Verify
+
+```sh
+docker run --rm --entrypoint=/bin/sh cdbattags/openresty-testsuite:latest -c '
+  luarocks install lua-resty-jwt X.Y.Z-1 && luarocks show lua-resty-jwt
+  opm get cdbattags/lua-resty-jwt=X.Y.Z && opm list'
+```
+
+- <https://luarocks.org/modules/cdbattags/lua-resty-jwt> lists `X.Y.Z-1`,
+  and its rockspec has `tag = "vX.Y.Z"`.
+- <https://opm.openresty.org/package/cdbattags/lua-resty-jwt/> lists `X.Y.Z`.
+  OPM indexes uploads in the background, so it can take a few minutes.
+
+## 4. Publish the security advisories
+
+For each draft at
+<https://github.com/cdbattags/lua-resty-jwt/security/advisories>:
+
+1. Set the affected versions to `< X.Y.Z` and the patched version to `X.Y.Z`.
+2. Check the credits.
+3. Request a CVE if wanted.
+4. Publish.
+
+Do this only once both packages are live.
+
+## If something goes wrong
+
+- **`version` or `test` failed:** nothing was uploaded. Delete the GitHub
+  release and the tag (`git push origin :refs/tags/vX.Y.Z`), fix the problem
+  on master, then tag and release again.
+- **One upload failed and the other succeeded:** fix the cause (for example,
+  expired secrets), then use "Re-run failed jobs" on the same run. Both
+  servers reject a duplicate version, so nothing can be published twice.
+- **A broken package is live.** Never move or reuse a published tag.
+  - **LuaRocks:** if only the rockspec is wrong, upload a revision built from
+    the same tag:
+    `luarocks new_version lua-resty-jwt-X.Y.Z-1.rockspec X.Y.Z-2 --tag=vX.Y.Z`,
+    then `luarocks upload lua-resty-jwt-X.Y.Z-2.rockspec --api-key=…`.
+    If the code is wrong, release `X.Y.(Z+1)`. Module owners can delete a
+    version at `https://luarocks.org/delete/cdbattags/lua-resty-jwt/X.Y.Z-1`,
+    but deletion is irreversible and mirrors may keep a copy, so keep it for
+    releases that are actually dangerous.
+  - **OPM:** you can't delete a single version, and re-uploading the same
+    version is rejected as a duplicate upload. The server's only delete
+    action removes the *whole* `cdbattags/lua-resty-jwt` package (every
+    version) after a 3-day grace period, so don't use it. Release
+    `X.Y.(Z+1)` instead.
