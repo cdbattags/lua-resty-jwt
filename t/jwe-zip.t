@@ -492,7 +492,7 @@ sign: false zip is not allowed in a JWS header
             })
             local function flip(token, index)
                 local parts = {}
-                for p in token:gmatch("[^.]+") do parts[#parts + 1] = p end
+                for p in (token .. "."):gmatch("([^.]*)%.") do parts[#parts + 1] = p end
                 local raw = jwt:jwt_decode(parts[index])
                 raw = string.char(bit.bxor(raw:byte(1), 1)) .. raw:sub(2)
                 parts[index] = jwt:jwt_encode(raw)
@@ -504,8 +504,8 @@ sign: false zip is not allowed in a JWS header
                     header = { alg = "dir", enc = enc, zip = "DEF" },
                     payload = { foo = "bar" },
                 })
-                -- dir has an empty encrypted key: parts are header, iv, ciphertext, tag
-                for _, case in ipairs({ { "ciphertext", 3 }, { "tag", 4 }, { "iv", 2 } }) do
+                -- dir has an empty encrypted key: parts are header, "", iv, ciphertext, tag
+                for _, case in ipairs({ { "ciphertext", 4 }, { "tag", 5 }, { "iv", 3 } }) do
                     local obj = verifier:verify(keys[enc], flip(token, case[2]))
                     ngx.say(enc, " ", case[1], ": ", obj.verified, " ", obj.reason)
                 end
