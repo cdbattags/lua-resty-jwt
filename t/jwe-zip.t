@@ -19,12 +19,13 @@ run_tests();
 
 __DATA__
 
-=== TEST 1: zip=DEF round-trips with the built-in provider for every enc
+=== TEST 1: zip=DEF round-trips with the built-in provider, once enabled, for every enc
 --- http_config eval: $::HttpConfig
 --- config
     location /t {
         content_by_lua_block {
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression()
             local cjson = require "cjson"
             ngx.say("built-in: ", require("resty.jwt-zlib").available)
             local keys = {
@@ -69,6 +70,7 @@ A256GCM: true DEF true
     location /t {
         content_by_lua_block {
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression()
             local function get_testcert(name)
                 local f = io.open("/lua-resty-jwt/testcerts/" .. name)
                 local contents = f:read("*all")
@@ -115,6 +117,7 @@ PBES2-HS256+A128KW: true DEF true
     location /t {
         content_by_lua_block {
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression()
             local shared_key = "12341234123412341234123412341234"
             local big = string.rep("compressible-payload-chunk-", 200)
             local plain = jwt:sign(shared_key, {
@@ -148,6 +151,7 @@ payload_ok: true
     location /t {
         content_by_lua_block {
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression()
             -- Figure 151 (JWK "k")
             local key = jwt:jwt_decode("GZy6sIZ6wl9NJOKB-jnmVQ")
             -- Figure 170
@@ -197,6 +201,7 @@ custom decoder: true
     location /t {
         content_by_lua_block {
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression()
             local key = string.rep("k", 32)
             local function sign_raw(plaintext, zip)
                 local signer = jwt:new()
@@ -243,6 +248,7 @@ custom nil: true nil
     location /t {
         content_by_lua_block {
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression()
             local zlib = require "resty.jwt-zlib"
             local key = string.rep("k", 32)
             -- 10 MiB of zeros deflates to ~10 KiB
@@ -284,6 +290,7 @@ A128CBC-HS256: false failed to decrypt JWE fast: true
     location /t {
         content_by_lua_block {
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression()
             local key = string.rep("k", 32)
             -- ~300 KiB of JSON that compresses far better than 10:1
             local payload = { data = string.rep("a", 300 * 1024) }
@@ -338,6 +345,7 @@ reset: true
     location /t {
         content_by_lua_block {
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression()
             local zlib = require "resty.jwt-zlib"
             local key = string.rep("k", 32)
             local good = assert(zlib.deflate('{"foo":"bar","pad":"' .. string.rep("x", 200) .. '"}'))
@@ -480,6 +488,7 @@ sign: false zip is not allowed in a JWS header
     location /t {
         content_by_lua_block {
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression()
             local zlib = require "resty.jwt-zlib"
             local inflate_calls = 0
             local verifier = jwt:new()
@@ -539,6 +548,7 @@ A128CBC-HS256 untampered: true
     location /t {
         content_by_lua_block {
             local jwt = require "resty.jwt"
+            jwt:register_zlib_compression()
             local cjson = require "cjson"
             local shared_key = "12341234123412341234123412341234"
             local deflate_calls, inflate_calls = 0, 0
@@ -560,7 +570,7 @@ A128CBC-HS256 untampered: true
                     return xor_bytes(d)
                 end,
             })
-            -- overriding DEF on the instance must not touch the built-in
+            -- overriding DEF on the instance must not touch the module's DEF
             a:register_compression_alg("DEF", {
                 deflate = function() return nil, "disabled" end,
                 inflate = function() return nil, "disabled" end,

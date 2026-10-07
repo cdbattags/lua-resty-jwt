@@ -653,6 +653,7 @@ A256CBC-HS512 valid: true decrypts=1
                 payload = { foo = "bar" },
             })
             local key = string.rep("k", 32)
+            jwt:register_zlib_compression()
             local zipped = jwt:sign(key, {
                 header = { alg = "dir", enc = "A256GCM", zip = "DEF" },
                 payload = { foo = "bar" },

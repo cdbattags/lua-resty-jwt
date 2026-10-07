@@ -11,7 +11,6 @@ local openssl_rand = require "resty.openssl.rand"
 local kdf = require "resty.openssl.kdf"
 local utils = require "resty.utils"
 local jwt_validators = require "resty.jwt-validators"
-local jwt_zlib = require "resty.jwt-zlib"
 local jwk = require "resty.jwt.jwk"
 local bit = require "bit"
 
@@ -876,17 +875,9 @@ end
 -- JWE "zip" header parameter handlers (RFC 7516 4.1.3), keyed by zip value.
 -- Each handler is a table { deflate = fn(bytes)->bytes,err
 --                           inflate = fn(bytes, max_size)->bytes,err }.
--- These built-ins are never mutated: jwt:register_compression_alg stores a
--- fresh table on the object it is called on (see get_compression_alg).
--- "DEF" is built in when the system zlib can be loaded through the FFI; it is
--- only used to compress when the caller's JWE header asks for zip=DEF.
-local builtin_compression_algs = {}
-if jwt_zlib.available then
-  builtin_compression_algs[str_const.DEF] = {
-    deflate = jwt_zlib.deflate,
-    inflate = jwt_zlib.inflate,
-  }
-end
+-- None is registered by default: compression is opt-in through
+-- jwt:register_zlib_compression or jwt:register_compression_alg, which store
+-- a fresh table on the object they are called on (see get_compression_alg).
 
 -- An inflated JWE payload may be at most max(250 KiB, 10x the compressed
 -- size) unless jwt:set_zip_max_size sets an explicit cap (cf. go-jose,
@@ -896,11 +887,7 @@ local ZIP_DEFAULT_MAX_RATIO = 10
 
 local function get_compression_alg(self, zip)
   local algs = self and self.compression_algs
-  local handler = algs and algs[zip]
-  if handler == nil then
-    handler = builtin_compression_algs[zip]
-  end
-  return handler
+  return algs and algs[zip]
 end
 
 --@function look up the handler for a JWE "zip" header value, raising on an
@@ -2851,7 +2838,7 @@ end
 -- The registration applies to the object it is called on: on the module
 -- (jwt:register_compression_alg) it is inherited by instances from jwt:new()
 -- that have not registered their own; on an instance it applies to that
--- instance only. Built-in handlers are never modified.
+-- instance only. No zip handler is registered by default.
 ---@param name string
 ---@param handler resty.jwt.compression_handler
 function _M.register_compression_alg(self, name, handler)
@@ -2878,19 +2865,34 @@ _M.compression_algs = nil
 -- how far one call can overshoot max_size (DEFLATE expands at most ~1032x).
 local LUA_ZLIB_FEED_CHUNK = 256
 
---@function register_zlib_compression : bind the JWE "DEF" zip alg to a caller-supplied lua-zlib module
---@param zlib : a lua-zlib-compatible module (typically the result of `require "zlib"`).
---              Passing it in keeps the dependency caller-owned. "DEF" is
---              already built in when the system zlib can be loaded through
---              the FFI; use this to prefer lua-zlib or where the FFI is not
---              available. Like register_compression_alg it applies to the
---              object it is called on.
+--@function register_zlib_compression : enable the JWE "DEF" zip alg (raw DEFLATE)
+--@param zlib : optional. With no argument, the built-in provider is used: raw
+--              DEFLATE over the system zlib, bound through the LuaJIT FFI
+--              (resty.jwt-zlib; OpenResty's nginx already links zlib). Raises
+--              if zlib cannot be loaded. Otherwise a lua-zlib-compatible
+--              module (typically the result of `require "zlib"`), which
+--              keeps that dependency caller-owned.
+--              Like register_compression_alg it applies to the object it is
+--              called on: the module (inherited by jwt:new() instances that
+--              have not registered their own) or one instance.
 --              Compress-then-encrypt leaks information about the plaintext
 --              through the ciphertext length (CRIME / BREACH family): only
 --              sign with zip=DEF when attacker-chosen plaintext cannot be
 --              mixed with secrets.
----@param zlib table
+---@param zlib table?
 function _M.register_zlib_compression(self, zlib)
+  if zlib == nil then
+    local ok, jwt_zlib = pcall(require, "resty.jwt-zlib")
+    if not ok or not jwt_zlib.available then
+      error({reason="the built-in zlib provider is not available: "
+        .. tostring(ok and jwt_zlib.err or "failed to load resty.jwt-zlib")})
+    end
+    _M.register_compression_alg(self, str_const.DEF, {
+      deflate = jwt_zlib.deflate,
+      inflate = jwt_zlib.inflate,
+    })
+    return
+  end
   if type(zlib) ~= "table"
       or type(zlib.deflate) ~= "function"
       or type(zlib.inflate) ~= "function" then
