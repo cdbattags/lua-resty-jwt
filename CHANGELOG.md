@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 contain breaking changes. Changes before 0.4.0 are only recorded in the git
 history and the [GitHub releases](https://github.com/cdbattags/lua-resty-jwt/releases).
 
-## [0.4.0] - UNRELEASED
+## [0.4.0] - 2026-10-07
 
 0.4.0 is a security release. It fixes several vulnerabilities and hardens
 every verification and decryption path. Some of the changes are **breaking**:
