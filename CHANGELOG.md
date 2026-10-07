@@ -14,27 +14,25 @@ read [Upgrading from 0.3.x](#upgrading-from-03x) before upgrading.
 
 ### Security
 
-<!-- Fill in the GHSA/CVE IDs when the advisories are published, not before. -->
-
 - **Critical: forged JWE accepted when a public key is used as the PBES2 password** (0.3.0–0.3.2).
   Applications calling `jwt:verify(public_key_pem, token)` without an algorithm whitelist
   accepted attacker-made PBES2 JWEs. JWE key management algorithms are now bound to
-  compatible key types. GHSA-TBD.
+  compatible key types. [GHSA-85rg-93pf-mg8c](https://github.com/cdbattags/lua-resty-jwt/security/advisories/GHSA-85rg-93pf-mg8c).
 - **Algorithm confusion: an RSA/EC public key was accepted as the HMAC secret** with no
-  whitelist set (all versions). GHSA-TBD.
+  whitelist set (all versions). [GHSA-wm36-g7wp-x24w](https://github.com/cdbattags/lua-resty-jwt/security/advisories/GHSA-wm36-g7wp-x24w).
 - **JWE AES-GCM tag length was not enforced**, allowing forgery with truncated tags
-  (0.2.3–0.3.2). Tags must now be exactly 16 bytes. GHSA-TBD.
+  (0.2.3–0.3.2). Tags must now be exactly 16 bytes. [GHSA-gvf3-mm6g-94wp](https://github.com/cdbattags/lua-resty-jwt/security/advisories/GHSA-gvf3-mm6g-94wp).
 - **Remote nginx worker crash** when an ES*-signed token was verified with an RSA key
   (0.2.3–0.3.2), or when an `x5c` token was verified with an unloadable trusted-certs file
-  (all versions). GHSA-TBD.
+  (all versions). [GHSA-8g6x-8538-rvj8](https://github.com/cdbattags/lua-resty-jwt/security/advisories/GHSA-8g6x-8538-rvj8).
 - **AES-CBC-HMAC JWE was decrypted before its tag was checked**, and claims were validated
-  before authentication (a padding/decryption oracle; all versions). GHSA-TBD.
+  before authentication (a padding/decryption oracle; all versions). [GHSA-4jwm-wqj5-pr89](https://github.com/cdbattags/lua-resty-jwt/security/advisories/GHSA-4jwm-wqj5-pr89).
 - **Unbounded PBES2 iteration count, and the alg whitelist was not applied to JWE**
   (CPU exhaustion; PBES2 in 0.3.0–0.3.2, the whitelist was ignored for JWE in all
-  versions). GHSA-TBD.
+  versions). [GHSA-c526-qc23-r353](https://github.com/cdbattags/lua-resty-jwt/security/advisories/GHSA-c526-qc23-r353).
 - **Token malleability**: non-canonical compact serializations (extra dots, padding, the
   standard base64 alphabet, non-zero trailing bits) verified as the original token
-  (all versions). GHSA-TBD.
+  (all versions). [GHSA-v6j5-wh7j-2ggg](https://github.com/cdbattags/lua-resty-jwt/security/advisories/GHSA-v6j5-wh7j-2ggg).
 - `sign` could echo the whole secret into the error reason when an RSA-OAEP JWE was signed
   with a key that was neither a certificate nor a public key. If you hit that error in
   production, rotate the key.
