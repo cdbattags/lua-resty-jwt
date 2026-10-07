@@ -59,16 +59,18 @@ below in order.
    It calls LuaRocks' `/api/1/<key>/status` (the first call `luarocks upload`
    makes) and GitHub's `/user` with the OPM token. It checks that the token
    belongs to `OPM_GITHUB_ACCOUNT` (or an org it's a member of), that it has
-   opm's required `user:email` and `read:org` scopes, and that it doesn't
-   expire within 7 days. It never prints a credential. `publish.yml` runs the
-   same check before either upload.
+   the `user:email` scope opm requires (plus `read:org` only when publishing
+   under an organization) and no other scope (opm.openresty.org rejects
+   over-permissive tokens), and that it doesn't expire within 7 days. It
+   never prints a credential. `publish.yml` runs the same check before either
+   upload.
 
    To rotate a credential, update the repository secret (the value is read
    from stdin, so it isn't echoed or stored in history):
 
    ```sh
    gh secret set LUAROCKS_API_KEY --repo cdbattags/lua-resty-jwt   # new key from https://luarocks.org/settings/api-keys
-   gh secret set OPM_GITHUB_TOKEN --repo cdbattags/lua-resty-jwt   # classic token, scopes user:email + read:org only
+   gh secret set OPM_GITHUB_TOKEN --repo cdbattags/lua-resty-jwt   # classic token, user:email scope only
    ```
 6. Merge to `master`.
 
