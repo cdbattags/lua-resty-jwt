@@ -98,9 +98,11 @@ JWE:
   `apu`/`apv` are rejected; `epk` is validated (EC P-256/384/521 only; secp256k1 refused).
 - `zip` (which 0.3.x ignored) is rejected on a JWS. A JWE with a `zip` header is rejected
   (`unsupported zip: DEF`) before key work unless a handler for that value is registered,
-  and none is by default; 0.3.x ignored `zip` and returned the still-compressed bytes as the
-  payload. `sign` with a `zip` header raises the same reason. Enable `DEF` with
-  `jwt:register_zlib_compression()`.
+  and none is by default. 0.3.x ignored `zip` and passed the still-compressed bytes to the
+  payload decoder (with the default JSON decoder, the payload was `nil`). `sign` with a
+  `zip` header raises the same reason. Enable `DEF` with `jwt:register_zlib_compression()`.
+  JWEs that 0.3.x signed with a `zip` header were never actually compressed, so they don't
+  decrypt in 0.4.0 even with compression enabled; reissue them without `zip`.
 
 Token output:
 - `sign` serializes the header with a stable parameter order (`typ`, `alg`, `enc`, `zip`,
@@ -272,6 +274,10 @@ The changes you are most likely to hit, and what to do about them:
    that requires `resty.hmac` directly must now depend on `jkeys089/lua-resty-hmac`
    itself. Also check `set_pbes2_max_count` if you accept PBES2 tokens with more than
    10000 iterations, and AES key wrap keys, which must now have exactly the alg's size.
+9. **JWEs with `zip: "DEF"` are rejected** (`unsupported zip: DEF`). Compression is opt-in:
+   call `jwt:register_zlib_compression()` (built-in, system zlib) or pass a lua-zlib module,
+   and drop any custom payload decoder that inflated the payload itself. Tokens that 0.3.x
+   signed with a `zip` header were never compressed and must be reissued without it.
 
 ### Credits
 
