@@ -27,7 +27,7 @@ Each release is published to LuaRocks and OPM from the same tag; see [RELEASING.
 - [OpenResty](https://openresty.org) (ngx_lua with LuaJIT and lua-resty-core), built with OpenSSL. CI runs OpenResty 1.27.1.2 with OpenSSL 3.0.
 - [lua-resty-openssl](https://github.com/fffonion/lua-resty-openssl) >= 1.1.0 from LuaRocks, or >= 1.2.0 from OPM (OPM has no 1.1.x build). Both package managers install it for you.
 - lua-cjson and `resty.random` (from lua-resty-string), which ship with OpenResty, so they are not installed separately. Nothing else is needed: lua-resty-hmac is no longer a dependency.
-- JWE compression (`zip: "DEF"`) uses the zlib that nginx is already linked against, through the LuaJIT FFI.
+- JWE compression (`zip: "DEF"`) is off by default. Its built-in provider, enabled with `jwt:register_zlib_compression()`, uses the zlib that nginx is already linked against, through the LuaJIT FFI.
 
 Since 0.4.0, HMACs are computed with lua-resty-openssl. The LuaRocks package still installs the vendored `resty.hmac` ([lua-resty-hmac](https://github.com/jkeys089/lua-resty-hmac)) for code that requires it, but this library no longer uses it, OPM no longer pulls it in, and it will be removed in 1.0.
 
@@ -462,22 +462,39 @@ The `alg` header specifies the key management algorithm (RFC 7518 §4) and what 
 
 The optional `zip` header parameter (RFC 7516 §4.1.3) compresses the payload
 before it is encrypted. The only registered value is `DEF` (raw DEFLATE,
-RFC 1951). It is built in: `resty.jwt-zlib` binds the system zlib through the
-LuaJIT FFI (OpenResty's nginx already links zlib), so nothing extra has to be
-installed. If zlib cannot be loaded, `DEF` is unsupported until a handler is
-registered with [register_zlib_compression](#register_zlib_compression) or
-[register_compression_alg](#register_compression_alg).
+RFC 1951).
 
-**Only set `zip` when you have considered the leak.** Compress-then-encrypt
+Compression is **opt-in**: no `zip` handler is registered by default, so a JWE
+whose header carries `zip` is rejected (`unsupported zip: DEF`) when verifying,
+and `sign` raises with the same reason. To enable `DEF`, call
+[register_zlib_compression](#register_zlib_compression) with no argument. That
+registers the built-in provider, `resty.jwt-zlib`, which binds the system zlib
+through the LuaJIT FFI (OpenResty's nginx already links zlib), so nothing extra
+has to be installed:
+
+```lua
+local jwt = require "resty.jwt"
+jwt:register_zlib_compression()          -- the module and every instance without its own handlers
+-- or, for one instance only:
+local j = jwt:new()
+j:register_zlib_compression()
+```
+
+You can also pass a lua-zlib module to
+[register_zlib_compression](#register_zlib_compression), or register any
+handler with [register_compression_alg](#register_compression_alg).
+
+**Only enable `zip` when you have considered the leak.** Compress-then-encrypt
 reveals information about the plaintext through the ciphertext length (the
 CRIME / BREACH family of attacks). Do not compress payloads where
-attacker-influenced data sits next to secrets. A JWE is only ever compressed
-when its header asks for it.
+attacker-influenced data sits next to secrets. Once a handler is registered, a
+JWE is only compressed when its header asks for it.
 
 When verifying a `zip` JWE:
 
-* An unknown or non-string `zip` value is rejected (`unsupported zip: …` /
-  `invalid zip in JWE header`) before any key is unwrapped or derived.
+* A `zip` value with no registered handler (every value, by default) is
+  rejected with `unsupported zip: …`, and a non-string one with `invalid zip in
+  JWE header`, before any key is unwrapped or derived.
 * Content is decompressed only after the authentication tag or MAC has been
   verified and the content decrypted.
 * The decompressed size is capped at max(250 KiB, 10 × the compressed size),
@@ -522,18 +539,36 @@ built-in default, not the module's setting).
 
 ## register_zlib_compression
 
-`syntax: jwt:register_zlib_compression(zlib_module)`
+`syntax: jwt:register_zlib_compression(zlib_module?)`
 
-Bind `DEF` to a caller-supplied
-[lua-zlib](https://github.com/brimworks/lua-zlib)-compatible module instead of
-the built-in FFI binding, e.g. where the FFI is not available. The module stays
-a caller-owned dependency. Input is fed to lua-zlib in small pieces so the
-size cap still applies, and lua-zlib's end-of-stream flag and input count are
-checked to reject truncated streams and trailing data.
+Enable the JWE `zip: "DEF"` compression, which is off by default.
+
+With no argument, `DEF` is bound to the built-in provider: raw DEFLATE over the
+system zlib through the LuaJIT FFI (`resty.jwt-zlib`), with no extra
+dependency. If zlib or the FFI cannot be loaded, the call raises
+`{reason = "the built-in zlib provider is not available: …"}` right away
+instead of failing later when a token is verified.
+
+```lua
+jwt:register_zlib_compression()
+```
+
+With an argument, `DEF` is bound to a caller-supplied
+[lua-zlib](https://github.com/brimworks/lua-zlib)-compatible module, e.g. where
+the FFI is not available. The module stays a caller-owned dependency. Input is
+fed to lua-zlib in small pieces so the size cap still applies, and lua-zlib's
+end-of-stream flag and input count are checked to reject truncated streams and
+trailing data.
 
 ```lua
 jwt:register_zlib_compression(require "zlib")
 ```
+
+Like [register_compression_alg](#register_compression_alg), it applies to the
+object it is called on: on the module it is inherited by `jwt:new()` instances
+that have not registered handlers of their own, and on an instance it affects
+only that instance. Read the note on compression leaks in the
+[sign JWE](#sign-jwe) section before enabling it.
 
 ## register_compression_alg
 
@@ -560,7 +595,8 @@ jwt:register_compression_alg("DEF", {
 Registrations apply to the object they are made on. Called on the module
 (`jwt:register_compression_alg`), they are inherited by `jwt:new()` instances
 that have not registered their own. Called on an instance, they affect only
-that instance. The built-in `DEF` handler itself is never modified.
+that instance, which keeps a copy of the module's handlers as they were at the
+time. No handler is registered by default.
 
 For reference implementations, see `lib/resty/jwt-zlib.lua` (bounded streaming
 inflate over the FFI) and `register_zlib_compression` in `lib/resty/jwt.lua`.

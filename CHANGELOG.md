@@ -96,11 +96,11 @@ JWE:
 - ECDH-ES+A*KW now follows RFC 7518's Concat KDF. Tokens from 0.3.x need the deprecated,
   decrypt-only `jwt:set_legacy_ecdh_kw_kdf(true)`, which will be removed in 1.0. Invalid
   `apu`/`apv` are rejected; `epk` is validated (EC P-256/384/521 only; secp256k1 refused).
-- `zip` (which 0.3.x ignored) is rejected on a JWS. On a JWE, unknown `zip` values are
-  rejected before key work.
-- A `zip: "DEF"` JWE is now decompressed by default, with the built-in provider over the
-  system zlib (0.3.x ignored `zip` and returned the compressed bytes). PR #71 made
-  compression opt-in; 0.4.0 builds it in.
+- `zip` (which 0.3.x ignored) is rejected on a JWS. A JWE with a `zip` header is rejected
+  (`unsupported zip: DEF`) before key work unless a handler for that value is registered,
+  and none is by default; 0.3.x ignored `zip` and returned the still-compressed bytes as the
+  payload. `sign` with a `zip` header raises the same reason. Enable `DEF` with
+  `jwt:register_zlib_compression()`.
 
 Token output:
 - `sign` serializes the header with a stable parameter order (`typ`, `alg`, `enc`, `zip`,
@@ -165,10 +165,13 @@ Other:
 - JWK and JWK Set keys (table or JSON), `resty.openssl.pkey`/`x509` objects, and reusable
   key objects via `jwt:load_key`. JWKS keys are selected by `kid`/`kty`/`crv`/`use`/`key_ops`/`alg`.
   New module `resty.jwt.jwk` with RFC 7638 thumbprints.
-- JWE compression (`zip: "DEF"`) with a built-in raw-DEFLATE provider over the system zlib
-  (new module `resty.jwt-zlib`, no new dependency), bounded streaming inflate
-  (`jwt:set_zip_max_size`), and per-instance providers (`register_compression_alg`,
-  `register_zlib_compression`). Based on PR #71.
+- Opt-in JWE compression (`zip: "DEF"`), off by default: `jwt:register_zlib_compression()`
+  enables a built-in raw-DEFLATE provider over the system zlib (new module `resty.jwt-zlib`,
+  no new dependency; raises at registration if zlib cannot be loaded),
+  `jwt:register_zlib_compression(require "zlib")` uses lua-zlib instead, and
+  `register_compression_alg` registers any handler. Registrations apply to the module or a
+  single instance. Inflate is bounded (`jwt:set_zip_max_size`) and runs only after the
+  content is authenticated. Based on PR #71.
 - Configurable sign-side `typ` whitelist (`jwt:set_typ_whitelist`; case-insensitive,
   `application/` prefix ignored). Based on PR #72.
 - `crit` handling (`jwt:set_crit_whitelist`) and header validators (`__header`,
