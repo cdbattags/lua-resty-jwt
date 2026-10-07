@@ -204,6 +204,9 @@ Other:
 - The publish workflow refuses a tag that doesn't match `_VERSION` before building or
   uploading anything, runs the suite through `./ci` first, and only runs for published,
   non-pre-release GitHub releases.
+- Before uploading, the publish workflow checks the LuaRocks API key and the OPM GitHub
+  token without publishing (`./ci-check-credentials`, also runnable by hand through the
+  *Check publish credentials* workflow), and OPM uploads only after LuaRocks has succeeded.
 - The examples log `reason` instead of returning it, return a bare 401, and pin their
   algorithms with `verify_with`.
 

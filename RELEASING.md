@@ -45,7 +45,32 @@ below in order.
    It must end with `==> dry run OK for X.Y.Z`. During `new_version`,
    LuaRocks prints a harmless `Warning: invalid URL ... git+https`, because
    it can't fetch a git URL to checksum it.
-5. Merge to `master`.
+5. **Check the publish credentials** (nothing is uploaded). Once
+   `check-credentials.yml` is on `master`, run it from the Actions tab
+   (*Check publish credentials* → *Run workflow*), or run it locally without
+   leaving the values in your shell history:
+
+   ```sh
+   read -rs LUAROCKS_API_KEY; read -rs OPM_GITHUB_TOKEN
+   export LUAROCKS_API_KEY OPM_GITHUB_TOKEN OPM_GITHUB_ACCOUNT=cdbattags
+   ./ci-check-credentials
+   ```
+
+   It calls LuaRocks' `/api/1/<key>/status` (the first call `luarocks upload`
+   makes) and GitHub's `/user` with the OPM token. It checks that the token
+   belongs to `OPM_GITHUB_ACCOUNT` (or an org it's a member of), that it has
+   opm's required `user:email` and `read:org` scopes, and that it doesn't
+   expire within 7 days. It never prints a credential. `publish.yml` runs the
+   same check before either upload.
+
+   To rotate a credential, update the repository secret (the value is read
+   from stdin, so it isn't echoed or stored in history):
+
+   ```sh
+   gh secret set LUAROCKS_API_KEY --repo cdbattags/lua-resty-jwt   # new key from https://luarocks.org/settings/api-keys
+   gh secret set OPM_GITHUB_TOKEN --repo cdbattags/lua-resty-jwt   # classic token, scopes user:email + read:org only
+   ```
+6. Merge to `master`.
 
 ## 2. Tag and release
 
@@ -67,8 +92,10 @@ gh release create vX.Y.Z --verify-tag --title vX.Y.Z --notes-file NOTES.md
   the GitHub release (keep the tag) and create a new, non-pre-release one for
   the same tag.
 
-Then watch the Actions run. The job order is `version` → `test` → `luarocks`
-and `opm` in parallel. If `version` or `test` fails, both uploads are skipped.
+Then watch the Actions run. The job order is `version` → `test` and
+`credentials` → `luarocks` → `opm`. If `version`, `test` or `credentials` fails,
+nothing is uploaded. OPM runs only after LuaRocks has succeeded, because a
+LuaRocks version can be deleted by its owner and an OPM version can't.
 
 ## 3. Verify
 

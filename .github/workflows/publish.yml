@@ -65,8 +65,28 @@ jobs:
           IMAGE: ${{ steps.image.outputs.image }}
         run: ./ci
 
+  # Read-only check of the upload credentials, so an expired or revoked key
+  # stops the release before anything is published (see ci-check-credentials).
+  credentials:
+    needs: version
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    name: Check publish credentials
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Check LuaRocks and OPM credentials
+        env:
+          LUAROCKS_API_KEY: ${{ secrets.LUAROCKS_API_KEY }}
+          OPM_GITHUB_ACCOUNT: ${{ secrets.OPM_GITHUB_ACCOUNT }}
+          OPM_GITHUB_TOKEN: ${{ secrets.OPM_GITHUB_TOKEN }}
+        run: ./ci-check-credentials
+
   luarocks:
-    needs: [version, test]
+    needs: [version, test, credentials]
     if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     name: LuaRocks upload
@@ -96,8 +116,10 @@ jobs:
           luarocks lint "lua-resty-jwt-${VERSION}-1.rockspec"
           luarocks upload "lua-resty-jwt-${VERSION}-1.rockspec" --api-key="$LUAROCKS_API_KEY"
 
+  # OPM can't delete a single version, so it uploads only after LuaRocks
+  # (where the owner can delete a version) has succeeded.
   opm:
-    needs: [version, test]
+    needs: [version, test, credentials, luarocks]
     if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     name: OPM upload
